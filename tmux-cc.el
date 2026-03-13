@@ -1,6 +1,6 @@
 ;;; tmux-cc.el --- tmux -CC integration for Emacs -*- lexical-binding: t; -*-
 
-;; Author: opencode
+;; Author: stephenjayakar
 ;; Keywords: terminals, tmux
 
 (require 'term)
