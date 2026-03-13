@@ -65,11 +65,11 @@ Returns ((TYPE WIDTH HEIGHT X Y PANE-ID CHILDREN) . NEXT-POS)."
                         (setq curr-pos (match-end 0)))
                     (error "Expected pane ID at %d" curr-pos)))
 
-                 ((= c ?[) ;; vertical split
+                 ((= c ?\[) ;; vertical split
                   (setq type 'vertical)
                   (setq curr-pos (1+ curr-pos))
                   (let ((parsed-children
-                         (tmux-cc--parse-children str curr-pos ?])))
+                         (tmux-cc--parse-children str curr-pos ?\])))
                     (setq children (car parsed-children))
                     (setq curr-pos (cdr parsed-children))))
 
@@ -83,16 +83,14 @@ Returns ((TYPE WIDTH HEIGHT X Y PANE-ID CHILDREN) . NEXT-POS)."
 
                  (t nil)))) ;; could be end of string or sibling comma
           (cons (list type width height x y pane-id children) curr-pos)))))
-(cons (list type width height x y pane-id children) curr-pos)
-(error "Expected node geometry at %d in %s" pos str)))
 
-(defun tmux-cc-parse-children (str pos end-char)
+(defun tmux-cc--parse-children (str pos end-char)
   "Parse children separated by commas until END-CHAR."
   (let ((children nil)
         (curr-pos pos)
         (len (length str)))
     (while (and (< curr-pos len) (/= (aref str curr-pos) end-char))
-      (let ((parsed-node (tmux-cc-parse-node str curr-pos)))
+      (let ((parsed-node (tmux-cc--parse-node str curr-pos)))
         (push (car parsed-node) children)
         (setq curr-pos (cdr parsed-node)))
       ;; If we see a comma, skip it for the next sibling
@@ -107,7 +105,7 @@ Returns ((TYPE WIDTH HEIGHT X Y PANE-ID CHILDREN) . NEXT-POS)."
   "Parse a full tmux layout string."
   (let* ((comma-pos (string-search "," layout-str))
          (rest (if comma-pos (substring layout-str (1+ comma-pos)) layout-str)))
-    (car (tmux-cc-parse-node rest 0))))
+    (car (tmux-cc--parse-node rest 0))))
 
 (defun tmux-cc-apply-layout (node root-window)
   "Recursively apply layout NODE to ROOT-WINDOW."
@@ -162,25 +160,22 @@ to the remote side, preventing early echoing of commands."
    (list (read-shell-command "tmux command: ")))
   (when (process-live-p tmux-cc-process)
     (if (y-or-n-p "A tmux-cc process is already running. Kill it? ")
-        (delete-process tmux-cc-process))))
-(when (process-live-p tmux-cc-process)
-  (if (y-or-n-p "A tmux-cc process is already running. Kill it? ")
-      (delete-process tmux-cc-process)
-    (user-error "tmux-cc process already running")))
+        (delete-process tmux-cc-process)
+      (user-error "tmux-cc process already running")))
 
-(setq tmux-cc-buffer "")
-(clrhash tmux-cc-panes)
+  (setq tmux-cc--buffer "")
+  (clrhash tmux-cc-panes)
 
-(setq tmux-cc-process
-      (make-process
-       :name "tmux-cc"
-       :buffer (generate-new-buffer "*tmux-cc*")
-       :command (split-string-and-unquote command)
-       :connection-type 'pty
-       :filter #'tmux-cc--filter
-       :sentinel #'tmux-cc--sentinel))
+  (setq tmux-cc-process
+        (make-process
+         :name "tmux-cc"
+         :buffer (generate-new-buffer "*tmux-cc*")
+         :command (split-string-and-unquote command)
+         :connection-type 'pty
+         :filter #'tmux-cc--filter
+         :sentinel #'tmux-cc--sentinel))
 
-(message "Started tmux-cc process.")
+  (message "Started tmux-cc process."))
 
 (defun tmux-cc--filter (process string)
   "Filter for the tmux-cc PROCESS receiving STRING."
@@ -236,7 +231,7 @@ to the remote side, preventing early echoing of commands."
           (when space2
             (let ((pane-id (substring line (1+ space1) space2))
                   (output-str (substring line (1+ space2))))
-              (tmux-cc--handle-output pane-id output-str))))))
+              (tmux-cc--handle-output pane-id output-str)))))))
 
    ((string-prefix-p "%layout-change " line)
     (let* ((parts (split-string line " "))
@@ -248,20 +243,25 @@ to the remote side, preventing early echoing of commands."
     (message "tmux window added: %s" line))
 
    ((string-prefix-p "%window-close " line)
-    (message "tmux window closed: %s" line))))
-((string-prefix-p "window-close " line)
- (message "tmux window closed: %s" line))
-((string-prefix-p "%pane-mode-changed " line)
- ;; Do nothing for now
- )
-((string-prefix-p "%session-changed " line)
- (message "tmux session changed: %s" line))
-((string-prefix-p "%sessions-changed" line)
- ;; Do nothing
- )
-(t
- ;; Unhandled or background output
- (message "tmux: %s" line)))
+    (message "tmux window closed: %s" line))
+
+   ((string-prefix-p "window-close " line)
+    (message "tmux window closed: %s" line))
+
+   ((string-prefix-p "%pane-mode-changed " line)
+    ;; Do nothing for now
+    )
+
+   ((string-prefix-p "%session-changed " line)
+    (message "tmux session changed: %s" line))
+
+   ((string-prefix-p "%sessions-changed" line)
+    ;; Do nothing
+    )
+
+   (t
+    ;; Unhandled or background output
+    (message "tmux: %s" line))))
 
 (defun tmux-cc--decode-octal (str)
   "Decode octal escapes like \\015\\012 in STR."
@@ -328,13 +328,11 @@ and will print ']2;title' directly into the buffer."
 (defun tmux-cc--send-keys (pane-id string)
   "Send keystrokes to PANE-ID. STRING is a raw string of chars."
   (when (process-live-p tmux-cc-process)
-;; Convert string to space-separated hex bytes
-(when (process-live-p tmux-cc-process)
-  ;; Convert string to space-separated hex bytes
-  (let ((hex-args (mapconcat (lambda (c) (format "%02X" c)) string " ")))
-    (process-send-string
-     tmux-cc-process
-     (format "send-keys -t %s -H %s\n" pane-id hex-args))))
+    ;; Convert string to space-separated hex bytes
+    (let ((hex-args (mapconcat (lambda (c) (format "%02X" c)) string " ")))
+      (process-send-string
+       tmux-cc-process
+       (format "send-keys -t %s -H %s\n" pane-id hex-args)))))
 
 (defun tmux-cc--intercept-process-send-string (orig-fun proc string &rest args)
   "Intercept input to tmux-cc dummy processes and route to tmux-cc."
@@ -408,9 +406,9 @@ and will print ']2;title' directly into the buffer."
 (defun tmux-cc-send-command (cmd &optional callback)
   "Send CMD to tmux. If CALLBACK is provided, it is called with output lines."
   (when (process-live-p tmux-cc-process)
-  (when callback
-    (setq tmux-cc--cmd-queue (append tmux-cc--cmd-queue (list callback))))
-  (process-send-string tmux-cc-process (concat cmd "\n")))
+    (when callback
+      (setq tmux-cc--cmd-queue (append tmux-cc--cmd-queue (list callback))))
+    (process-send-string tmux-cc-process (concat cmd "\n"))))
 
 (defun tmux-cc-command (cmd)
   "Send an arbitrary tmux COMMAND to the active tmux-cc session."
