@@ -1,9 +1,24 @@
-;;; tmux-cc.el --- tmux -CC integration for Emacs -*- lexical-binding: t; -*-
+;;; tmux-cc.el --- tmux control mode integration for Emacs -*- lexical-binding: t; -*-
 
-;; Author: stephenjayakar
-;; Keywords: terminals, tmux
+;; Author: Stephen Jayakar <stephenjayakar@gmail.com>
+;; Maintainer: Stephen Jayakar <stephenjayakar@gmail.com>
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "29.1"))
+;; Keywords: terminals, tmux, tools
+;; URL: https://github.com/stephenjayakar/emacs-tmux-control-mode
 
+;;; Commentary:
+
+;; tmux-cc.el integrates tmux control mode (`tmux -CC`) with Emacs. It
+;; creates a term buffer per tmux pane, mirrors tmux layout changes into Emacs
+;; windows, and exposes commands for splitting panes, switching windows and
+;; sessions, and sending arbitrary tmux commands.
+
+;;; Code:
+
+(require 'subr-x)
 (require 'term)
+(require 'windmove)
 
 (defgroup tmux-cc nil
   "tmux control mode integration."
@@ -15,6 +30,51 @@
 This allows global Emacs window management and command keys to function
 normally while inside a tmux pane."
   :type '(repeat string)
+  :group 'tmux-cc)
+
+(defcustom tmux-cc-strip-problematic-escape-sequences t
+  "When non-nil, strip terminal mode sequences that `term.el` displays visibly."
+  :type 'boolean
+  :group 'tmux-cc)
+
+(defcustom tmux-cc-focus-next-key "C-<tab>"
+  "Key used in tmux pane buffers to focus the pane to the right."
+  :type 'string
+  :group 'tmux-cc)
+
+(defcustom tmux-cc-focus-prev-key "C-S-<tab>"
+  "Key used in tmux pane buffers to focus the pane to the left."
+  :type 'string
+  :group 'tmux-cc)
+
+(defcustom tmux-cc-focus-other-key "C-x o"
+  "Key used in tmux pane buffers to focus another tmux pane."
+  :type '(choice (const :tag "Disabled" nil) string)
+  :group 'tmux-cc)
+
+(defcustom tmux-cc-command-key "C-c C-c"
+  "Key used in tmux pane buffers for `tmux-cc-command'."
+  :type '(choice (const :tag "Disabled" nil) string)
+  :group 'tmux-cc)
+
+(defcustom tmux-cc-switch-window-key "C-c C-w"
+  "Key used in tmux pane buffers for `tmux-cc-switch-window'."
+  :type '(choice (const :tag "Disabled" nil) string)
+  :group 'tmux-cc)
+
+(defcustom tmux-cc-switch-session-key "C-c C-s"
+  "Key used in tmux pane buffers for `tmux-cc-switch-session'."
+  :type '(choice (const :tag "Disabled" nil) string)
+  :group 'tmux-cc)
+
+(defcustom tmux-cc-detach-key "C-c C-d"
+  "Key used in tmux pane buffers for detaching the tmux client."
+  :type '(choice (const :tag "Disabled" nil) string)
+  :group 'tmux-cc)
+
+(defcustom tmux-cc-manager-buffer-name "*tmux-control*"
+  "Name of the tmux management buffer."
+  :type 'string
   :group 'tmux-cc)
 
 (defvar tmux-cc-process nil
@@ -34,6 +94,47 @@ normally while inside a tmux pane."
 
 (defvar tmux-cc--in-cmd nil
   "Non-nil if currently receiving command output.")
+
+(defvar tmux-cc-pane-mode-map (make-sparse-keymap)
+  "Keymap active in tmux pane buffers.")
+
+(defvar tmux-cc-manager-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "g") #'tmux-cc-manager-refresh)
+    (define-key map (kbd "RET") #'tmux-cc-manager-visit)
+    map)
+  "Keymap for `tmux-cc-manager-mode'.")
+
+(define-minor-mode tmux-cc-pane-mode
+  "Minor mode for tmux pane buffers."
+  :lighter " TmuxCC"
+  :keymap tmux-cc-pane-mode-map)
+
+(define-derived-mode tmux-cc-manager-mode special-mode "Tmux-Control"
+  "Major mode for inspecting tmux sessions, windows, and panes.")
+
+(defun tmux-cc--bind-pane-key (key command)
+  "Bind KEY to COMMAND in `tmux-cc-pane-mode-map'.
+If KEY is nil, remove any existing binding for COMMAND's slot."
+  (when key
+    (define-key tmux-cc-pane-mode-map (kbd key) command)))
+
+(defun tmux-cc-setup-keybindings ()
+  "Apply customizable tmux pane keybindings."
+  (setcdr tmux-cc-pane-mode-map nil)
+  (tmux-cc--bind-pane-key tmux-cc-focus-next-key #'tmux-cc-focus-right)
+  (tmux-cc--bind-pane-key tmux-cc-focus-prev-key #'tmux-cc-focus-left)
+  (tmux-cc--bind-pane-key tmux-cc-focus-other-key #'tmux-cc-focus-next-pane)
+  (tmux-cc--bind-pane-key tmux-cc-command-key #'tmux-cc-command)
+  (tmux-cc--bind-pane-key tmux-cc-switch-window-key #'tmux-cc-switch-window)
+  (tmux-cc--bind-pane-key tmux-cc-switch-session-key #'tmux-cc-switch-session)
+  (tmux-cc--bind-pane-key tmux-cc-detach-key #'tmux-cc-detach))
+
+(tmux-cc-setup-keybindings)
+
+(defun tmux-cc--tmux-target (target)
+  "Quote tmux TARGET for command use."
+  (format "'%s'" target))
 
 ;;; --- Layout Parser ---
 
@@ -164,6 +265,8 @@ to the remote side, preventing early echoing of commands."
       (user-error "tmux-cc process already running")))
 
   (setq tmux-cc--buffer "")
+  (unless (hash-table-p tmux-cc-panes)
+    (setq tmux-cc-panes (make-hash-table :test 'equal)))
   (clrhash tmux-cc-panes)
 
   (setq tmux-cc-process
@@ -280,14 +383,24 @@ to the remote side, preventing early echoing of commands."
 Emacs term.el does not handle sequences like \\e]2;title\\a properly
 and will print ']2;title' directly into the buffer."
   (replace-regexp-in-string
-   "\\e\\][0-9]+;\\([^\\a\\e]\\|\\e[^\\\\]\\)*\\(\\a\\|\\e\\\\\\)"
+   (rx "\e]" (* (not (any "\a" "\e"))) (or "\a" "\e\\"))
    ""
-   str))
+   str t t))
+
+(defun tmux-cc--strip-problematic-escapes (str)
+  "Strip terminal escape sequences from STR that `term.el` misrenders."
+  (let ((clean str))
+    (setq clean (replace-regexp-in-string "\e[=>]" "" clean t t))
+    (setq clean (replace-regexp-in-string "\ek[^\e]*\e\\\\" "" clean t t))
+    clean))
 
 (defun tmux-cc--handle-output (pane-id str)
   "Handle output STR for PANE-ID."
   (let* ((decoded (tmux-cc--decode-octal str))
          (clean (tmux-cc--strip-osc decoded))
+         (clean (if tmux-cc-strip-problematic-escape-sequences
+                    (tmux-cc--strip-problematic-escapes clean)
+                  clean))
          (buf (gethash pane-id tmux-cc-panes)))
     (unless (buffer-live-p buf)
       (setq buf (tmux-cc-create-pane pane-id)))
@@ -322,7 +435,8 @@ and will print ']2;title' directly into the buffer."
         (setq-local term-raw-map (copy-keymap term-raw-map))
         (dolist (key tmux-cc-passthrough-keys)
           (define-key term-raw-map (kbd key) nil))
-        (term-char-mode)))
+        (term-char-mode)
+        (tmux-cc-pane-mode 1)))
     buf))
 
 (defun tmux-cc--send-keys (pane-id string)
@@ -415,6 +529,60 @@ and will print ']2;title' directly into the buffer."
   (interactive "sTmux command: ")
   (tmux-cc-send-command cmd (lambda (out) (message "tmux: %s" (string-join out "\n")))))
 
+(defun tmux-cc--current-pane-id ()
+  "Return the pane id associated with the current buffer, or nil."
+  (let ((proc (get-buffer-process (current-buffer))))
+    (and (processp proc)
+         (process-get proc 'tmux-cc-pane-id))))
+
+(defun tmux-cc--select-pane (selector)
+  "Select tmux pane using SELECTOR from the current pane buffer."
+  (let ((pane-id (tmux-cc--current-pane-id)))
+    (unless pane-id
+      (user-error "Current buffer is not a tmux pane"))
+    (tmux-cc-send-command (format "select-pane %s -t %s" selector pane-id))))
+
+(defun tmux-cc--focus-window (move-fn)
+  "Move Emacs selection with MOVE-FN when possible."
+  (when (fboundp move-fn)
+    (ignore-errors
+      (funcall move-fn))))
+
+(defun tmux-cc-focus-right ()
+  "Focus the tmux pane to the right."
+  (interactive)
+  (tmux-cc--select-pane "-R")
+  (tmux-cc--focus-window #'windmove-right))
+
+(defun tmux-cc-focus-left ()
+  "Focus the tmux pane to the left."
+  (interactive)
+  (tmux-cc--select-pane "-L")
+  (tmux-cc--focus-window #'windmove-left))
+
+(defun tmux-cc-focus-up ()
+  "Focus the tmux pane above."
+  (interactive)
+  (tmux-cc--select-pane "-U")
+  (tmux-cc--focus-window #'windmove-up))
+
+(defun tmux-cc-focus-down ()
+  "Focus the tmux pane below."
+  (interactive)
+  (tmux-cc--select-pane "-D")
+  (tmux-cc--focus-window #'windmove-down))
+
+(defun tmux-cc-focus-next-pane ()
+  "Focus another tmux pane.
+Currently this uses rightward pane motion as the default ergonomic behavior."
+  (interactive)
+  (tmux-cc-focus-right))
+
+(defun tmux-cc-detach ()
+  "Detach the active tmux client."
+  (interactive)
+  (tmux-cc-send-command "detach-client"))
+
 (defun tmux-cc-switch-session ()
   "Interactively select and switch to another tmux session."
   (interactive)
@@ -441,5 +609,88 @@ and will print ']2;title' directly into the buffer."
            ;; Target string can just be the selected text since it's 'session:window'.
            (tmux-cc-send-command (format "select-window -t '%s'" window-str))))))))
 
+(defun tmux-cc-manager ()
+  "Open the tmux management buffer."
+  (interactive)
+  (let ((buffer (get-buffer-create tmux-cc-manager-buffer-name)))
+    (with-current-buffer buffer
+      (tmux-cc-manager-mode)
+      (setq-local revert-buffer-function #'tmux-cc-manager-refresh))
+    (pop-to-buffer buffer)
+    (tmux-cc-manager-refresh)))
+
+(defun tmux-cc-manager-refresh (&rest _)
+  "Refresh the tmux management buffer."
+  (interactive)
+  (unless (process-live-p tmux-cc-process)
+    (user-error "tmux-cc process is not running"))
+  (tmux-cc-send-command
+   "list-windows -a -F '#{session_name}\t#{window_name}\t#{window_id}\t#{window_active}\t#{window_layout}\t#{pane_id}'"
+   (lambda (windows)
+     (tmux-cc-send-command
+      "list-panes -a -F '#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_active}\t#{pane_current_command}\t#{pane_width}x#{pane_height}'"
+      (lambda (panes)
+        (tmux-cc--render-manager-buffer windows panes))))))
+
+(defun tmux-cc--render-manager-buffer (windows panes)
+  "Render tmux manager buffer using WINDOWS and PANES command output."
+  (let ((buffer (get-buffer-create tmux-cc-manager-buffer-name)))
+    (with-current-buffer buffer
+      (tmux-cc-manager-mode)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (propertize "Tmux Control\n" 'face 'bold))
+        (insert (propertize "g refresh, RET visit target\n\n" 'face 'shadow))
+        (insert (propertize "Windows\n" 'face 'underline))
+        (dolist (line windows)
+          (pcase-let ((`(,session ,window-name ,window-id ,active ,layout ,_pane-id)
+                       (split-string line "\t")))
+            (let ((start (point)))
+              (insert (format "%s %-16s %-16s %-4s %s\n"
+                              (if (string= active "1") "*" " ")
+                              session
+                              window-name
+                              window-id
+                              layout))
+              (add-text-properties
+               start (point)
+               (list 'tmux-target-type 'window
+                     'tmux-target-id window-id
+                     'mouse-face 'highlight
+                     'help-echo "RET: select tmux window")))))
+        (insert "\n")
+        (insert (propertize "Panes\n" 'face 'underline))
+        (dolist (line panes)
+          (pcase-let ((`(,session ,window-id ,pane-id ,active ,command ,size)
+                       (split-string line "\t")))
+            (let ((start (point)))
+              (insert (format "%s %-16s %-6s %-6s %-16s %s\n"
+                              (if (string= active "1") "*" " ")
+                              session
+                              window-id
+                              pane-id
+                              command
+                              size))
+              (add-text-properties
+               start (point)
+               (list 'tmux-target-type 'pane
+                     'tmux-target-id pane-id
+                     'mouse-face 'highlight
+                     'help-echo "RET: select tmux pane")))))
+        (goto-char (point-min))))))
+
+(defun tmux-cc-manager-visit ()
+  "Visit the tmux target at point in the manager buffer."
+  (interactive)
+  (let ((target-type (get-text-property (point) 'tmux-target-type))
+        (target-id (get-text-property (point) 'tmux-target-id)))
+    (pcase target-type
+      ('window
+       (tmux-cc-send-command (format "select-window -t %s" (tmux-cc--tmux-target target-id))))
+      ('pane
+       (tmux-cc-send-command (format "select-pane -t %s" (tmux-cc--tmux-target target-id))))
+      (_
+       (user-error "No tmux target on this line")))))
+
 (provide 'tmux-cc)
-;; tmux-cc.el ends here
+;;; tmux-cc.el ends here
