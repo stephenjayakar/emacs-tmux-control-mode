@@ -71,3 +71,9 @@ Run tests:
 ```bash
 emacs --batch -Q -L . --eval "(progn (load-file \"tmux-cc.el\") (load-file \"tests/tmux-cc-test.el\") (ert-run-tests-batch-and-exit))"
 ```
+
+Run live-server integration through `emacsclient`:
+
+```bash
+tests/tmux-cc-emacsclient.sh
+```
