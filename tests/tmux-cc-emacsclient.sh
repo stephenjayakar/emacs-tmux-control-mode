@@ -3,12 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-result="$(
-  emacsclient --eval \
-    "(progn
-       (load-file \"$ROOT/tests/tmux-cc-emacsclient.el\")
-       (tmux-cc-test-run-emacsclient))"
-)"
+result="$("$ROOT/tests/tmux-cc-e2e.sh")"
 
 if [[ "$result" != "\"ok\"" ]]; then
   echo "tmux-cc emacsclient integration test failed: $result" >&2
