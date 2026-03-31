@@ -204,8 +204,8 @@ If KEY is nil, remove any existing binding for COMMAND's slot."
 (defun tmux-cc-setup-keybindings ()
   "Apply customizable tmux pane keybindings."
   (setcdr tmux-cc-pane-mode-map nil)
-  (tmux-cc--bind-pane-key tmux-cc-focus-next-key #'tmux-cc-focus-next-pane)
-  (tmux-cc--bind-pane-key tmux-cc-focus-prev-key #'tmux-cc-focus-previous-pane)
+  (tmux-cc--bind-pane-key tmux-cc-focus-next-key #'tmux-cc-smart-next-window)
+  (tmux-cc--bind-pane-key tmux-cc-focus-prev-key #'tmux-cc-smart-previous-window)
   (tmux-cc--bind-pane-key tmux-cc-focus-other-key #'tmux-cc-focus-next-pane)
   (tmux-cc--bind-pane-key tmux-cc-command-key #'tmux-cc-command)
   (tmux-cc--bind-pane-key tmux-cc-split-horizontal-key #'tmux-cc-split-horizontal)
@@ -759,6 +759,10 @@ and will print ']2;title' directly into the buffer."
       (tmux-cc--select-pane-id pane-id)
       pane-id)))
 
+(defun tmux-cc--sync-selected-window-to-tmux ()
+  "Sync tmux focus to the selected Emacs window when it shows a tmux pane."
+  (tmux-cc--focus-window-pane (selected-window)))
+
 (defun tmux-cc--neighbor-pane-window (directions)
   "Return the first live tmux pane window found in DIRECTIONS."
   (catch 'found
@@ -831,6 +835,18 @@ and will print ']2;title' directly into the buffer."
   (or (tmux-cc--focus-window-pane
        (tmux-cc--neighbor-pane-window '(left up right down)))
       (tmux-cc-send-command "select-pane -t:.-")))
+
+(defun tmux-cc-smart-next-window ()
+  "Move to the next Emacs window and sync tmux focus when needed."
+  (interactive)
+  (next-window-any-frame)
+  (tmux-cc--sync-selected-window-to-tmux))
+
+(defun tmux-cc-smart-previous-window ()
+  "Move to the previous Emacs window and sync tmux focus when needed."
+  (interactive)
+  (previous-window-any-frame)
+  (tmux-cc--sync-selected-window-to-tmux))
 
 (defun tmux-cc-detach ()
   "Detach the active tmux client."

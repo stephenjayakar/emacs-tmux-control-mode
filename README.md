@@ -60,8 +60,8 @@ Useful interactive commands:
 Inside a pane buffer:
 
 - normal Emacs window arrangement commands stay local to Emacs
-- `C-<tab>` moves to the next visible tmux pane
-- `C-S-<tab>` moves to the previous visible tmux pane
+- `C-<tab>` moves to the next Emacs window and syncs tmux focus when landing on a tmux pane
+- `C-S-<tab>` moves to the previous Emacs window and syncs tmux focus when landing on a tmux pane
 - `C-t t` opens the tmux manager
 - `C-t k` kills the current tmux pane and closes its Emacs buffer
 - `C-t 2` splits below
@@ -111,6 +111,7 @@ Run the deterministic live e2e interface directly:
 ```bash
 tests/tmux-cc-e2e.sh '(tmux-cc-e2e-run)'
 tests/tmux-cc-e2e.sh '(tmux-cc-e2e-case-emacs-window-arrangement)'
+tests/tmux-cc-e2e.sh '(tmux-cc-e2e-case-mixed-window-navigation)'
 tests/tmux-cc-e2e.sh '(tmux-cc-e2e-case-vertical-tab-focus)'
 tests/tmux-cc-e2e.sh '(tmux-cc-e2e-case-kill-pane)'
 tests/tmux-cc-e2e.sh '(tmux-cc-e2e-case-preview)'

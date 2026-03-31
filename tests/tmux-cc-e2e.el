@@ -366,6 +366,28 @@
                           "Deleting an Emacs window incorrectly killed a tmux pane"))
   "ok-emacs-window-arrangement")
 
+(defun tmux-cc-e2e-test-mixed-window-navigation ()
+  "Verify smart tab navigation works across tmux and normal buffers."
+  (let* ((pane-id (tmux-cc-e2e--visit-first-pane))
+         (pane-window (selected-window))
+         (buffer-name (generate-new-buffer-name "*tmux-cc-mixed*"))
+         (buffer (get-buffer-create buffer-name)))
+    (split-window-right)
+    (other-window 1)
+    (switch-to-buffer buffer)
+    (tmux-cc-e2e--wait 5)
+    (select-window pane-window)
+    (tmux-cc-smart-next-window)
+    (tmux-cc-e2e--wait 5)
+    (tmux-cc-e2e--assert (equal (window-buffer (selected-window)) buffer)
+                          "Smart next window did not leave the tmux pane for a normal buffer")
+    (tmux-cc-smart-previous-window)
+    (tmux-cc-e2e--wait 5)
+    (tmux-cc-e2e--assert (equal (tmux-cc-e2e--visible-pane-id) pane-id)
+                          "Smart previous window did not return to the tmux pane")
+    (kill-buffer buffer))
+  "ok-mixed-window-navigation")
+
 (defun tmux-cc-e2e-test-manager-new-window ()
   "Verify manager-driven window creation."
   (tmux-cc-e2e-manager-open)
@@ -562,6 +584,12 @@
    #'tmux-cc-e2e-test-start
    #'tmux-cc-e2e-test-emacs-window-arrangement))
 
+(defun tmux-cc-e2e-case-mixed-window-navigation ()
+  "Run the mixed tmux/non-tmux window navigation e2e case."
+  (tmux-cc-e2e--run-isolated
+   #'tmux-cc-e2e-test-start
+   #'tmux-cc-e2e-test-mixed-window-navigation))
+
 (defun tmux-cc-e2e-case-manager-new-window ()
   "Run the manager new-window e2e case."
   (tmux-cc-e2e--run-isolated #'tmux-cc-e2e-test-start #'tmux-cc-e2e-test-manager-new-window))
@@ -635,6 +663,7 @@
            ("preview" . tmux-cc-e2e-case-preview)
            ("help" . tmux-cc-e2e-case-help)
            ("emacs-window-arrangement" . tmux-cc-e2e-case-emacs-window-arrangement)
+           ("mixed-window-navigation" . tmux-cc-e2e-case-mixed-window-navigation)
            ("splits-focus" . tmux-cc-e2e-case-splits-focus)
            ("vertical-tab-focus" . tmux-cc-e2e-case-vertical-tab-focus)
            ("kill-pane" . tmux-cc-e2e-case-kill-pane)
