@@ -25,7 +25,7 @@
   :group 'term)
 
 (defcustom tmux-cc-passthrough-keys
-  '("C-x" "M-x" "C-<tab>" "C-S-<tab>" "C-M-S-<tab>" "s-]" "s-{" "s-t" "s-w" "C-\\")
+  '("C-x" "M-x" "C-t" "C-<tab>" "C-S-<tab>" "C-M-S-<tab>" "s-]" "s-{" "s-t" "s-w" "C-\\")
   "List of key sequences that should bypass term-char-mode interception.
 This allows global Emacs window management and command keys to function
 normally while inside a tmux pane."
@@ -52,48 +52,53 @@ normally while inside a tmux pane."
   :type '(choice (const :tag "Disabled" nil) string)
   :group 'tmux-cc)
 
-(defcustom tmux-cc-command-key "C-c C-c"
+(defcustom tmux-cc-command-key "C-t !"
   "Key used in tmux pane buffers for `tmux-cc-command'."
   :type '(choice (const :tag "Disabled" nil) string)
   :group 'tmux-cc)
 
-(defcustom tmux-cc-split-horizontal-key "C-c |"
+(defcustom tmux-cc-split-horizontal-key "C-t 3"
   "Key used in tmux pane buffers for `tmux-cc-split-horizontal'."
   :type '(choice (const :tag "Disabled" nil) string)
   :group 'tmux-cc)
 
-(defcustom tmux-cc-split-vertical-key "C-c -"
+(defcustom tmux-cc-split-vertical-key "C-t 2"
   "Key used in tmux pane buffers for `tmux-cc-split-vertical'."
   :type '(choice (const :tag "Disabled" nil) string)
   :group 'tmux-cc)
 
-(defcustom tmux-cc-new-window-key "C-c C-n"
+(defcustom tmux-cc-new-window-key "C-t c"
   "Key used in tmux pane buffers for `tmux-cc-new-window'."
   :type '(choice (const :tag "Disabled" nil) string)
   :group 'tmux-cc)
 
-(defcustom tmux-cc-new-session-key "C-c N"
+(defcustom tmux-cc-new-session-key "C-t S"
   "Key used in tmux pane buffers for `tmux-cc-new-session'."
   :type '(choice (const :tag "Disabled" nil) string)
   :group 'tmux-cc)
 
-(defcustom tmux-cc-manager-key "C-c w"
+(defcustom tmux-cc-manager-key "C-t t"
   "Key used in tmux pane buffers for `tmux-cc-manager'."
   :type '(choice (const :tag "Disabled" nil) string)
   :group 'tmux-cc)
 
-(defcustom tmux-cc-switch-window-key "C-c C-w"
+(defcustom tmux-cc-switch-window-key "C-t w"
   "Key used in tmux pane buffers for `tmux-cc-switch-window'."
   :type '(choice (const :tag "Disabled" nil) string)
   :group 'tmux-cc)
 
-(defcustom tmux-cc-switch-session-key "C-c C-s"
+(defcustom tmux-cc-switch-session-key "C-t s"
   "Key used in tmux pane buffers for `tmux-cc-switch-session'."
   :type '(choice (const :tag "Disabled" nil) string)
   :group 'tmux-cc)
 
-(defcustom tmux-cc-detach-key "C-c C-d"
+(defcustom tmux-cc-detach-key "C-t d"
   "Key used in tmux pane buffers for detaching the tmux client."
+  :type '(choice (const :tag "Disabled" nil) string)
+  :group 'tmux-cc)
+
+(defcustom tmux-cc-kill-pane-key "C-t k"
+  "Key used in tmux pane buffers for `tmux-cc-kill-pane'."
   :type '(choice (const :tag "Disabled" nil) string)
   :group 'tmux-cc)
 
@@ -210,7 +215,8 @@ If KEY is nil, remove any existing binding for COMMAND's slot."
   (tmux-cc--bind-pane-key tmux-cc-manager-key #'tmux-cc-manager)
   (tmux-cc--bind-pane-key tmux-cc-switch-window-key #'tmux-cc-switch-window)
   (tmux-cc--bind-pane-key tmux-cc-switch-session-key #'tmux-cc-switch-session)
-  (tmux-cc--bind-pane-key tmux-cc-detach-key #'tmux-cc-detach))
+  (tmux-cc--bind-pane-key tmux-cc-detach-key #'tmux-cc-detach)
+  (tmux-cc--bind-pane-key tmux-cc-kill-pane-key #'tmux-cc-kill-pane))
 
 (tmux-cc-setup-keybindings)
 
@@ -1132,6 +1138,8 @@ When CALLBACK is non-nil, invoke it after the manager finishes rendering."
                         (or tmux-cc-new-session-key "disabled")))
         (insert (format "%-8s open the tmux manager\n"
                         (or tmux-cc-manager-key "disabled")))
+        (insert (format "%-8s kill the current tmux pane\n"
+                        (or tmux-cc-kill-pane-key "disabled")))
         (insert "q    Quit the current manager/help window\n")))
     (display-buffer buffer)))
 
@@ -1202,14 +1210,14 @@ When CALLBACK is non-nil, invoke it after the manager finishes rendering."
                  "RET visit, TAB preview, g refresh, h help, k kill, n new-window, S new-session, c command, d detach\n"
                  'face 'shadow))
         (insert (propertize
-                 (format "Pane keys: %s next, %s previous, %s manager, %s split-right, %s split-below, %s new-window, %s new-session\n\n"
+                 (format "Pane keys: %s next, %s previous, %s manager, %s kill, %s split-right, %s split-below, %s command\n\n"
                          (or tmux-cc-focus-next-key "disabled")
                          (or tmux-cc-focus-prev-key "disabled")
                          (or tmux-cc-manager-key "disabled")
+                         (or tmux-cc-kill-pane-key "disabled")
                          (or tmux-cc-split-horizontal-key "disabled")
                          (or tmux-cc-split-vertical-key "disabled")
-                         (or tmux-cc-new-window-key "disabled")
-                         (or tmux-cc-new-session-key "disabled"))
+                         (or tmux-cc-command-key "disabled"))
                  'face 'shadow))
         (insert (propertize "Sessions\n" 'face 'underline))
         (dolist (line sessions)

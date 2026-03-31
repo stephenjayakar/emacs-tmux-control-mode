@@ -62,14 +62,16 @@ Inside a pane buffer:
 - normal Emacs window arrangement commands stay local to Emacs
 - `C-<tab>` moves to the next visible tmux pane
 - `C-S-<tab>` moves to the previous visible tmux pane
-- `C-c w` opens the tmux manager
-- `C-c |` splits the current tmux pane horizontally
-- `C-c -` splits the current tmux pane vertically
-- `C-c C-n` creates a new tmux window
-- `C-c N` creates a new detached tmux session
-- `C-c C-w` switches tmux windows
-- `C-c C-s` switches tmux sessions
-- `C-c C-d` detaches the tmux client
+- `C-t t` opens the tmux manager
+- `C-t k` kills the current tmux pane and closes its Emacs buffer
+- `C-t 2` splits below
+- `C-t 3` splits right
+- `C-t !` runs an arbitrary tmux command
+- `C-t c` creates a new tmux window
+- `C-t S` creates a new detached tmux session
+- `C-t w` switches tmux windows
+- `C-t s` switches tmux sessions
+- `C-t d` detaches the tmux client
 
 Inside the tmux manager:
 
@@ -110,6 +112,7 @@ Run the deterministic live e2e interface directly:
 tests/tmux-cc-e2e.sh '(tmux-cc-e2e-run)'
 tests/tmux-cc-e2e.sh '(tmux-cc-e2e-case-emacs-window-arrangement)'
 tests/tmux-cc-e2e.sh '(tmux-cc-e2e-case-vertical-tab-focus)'
+tests/tmux-cc-e2e.sh '(tmux-cc-e2e-case-kill-pane)'
 tests/tmux-cc-e2e.sh '(tmux-cc-e2e-case-preview)'
 tests/tmux-cc-e2e.sh '(tmux-cc-e2e-state)'
 ```

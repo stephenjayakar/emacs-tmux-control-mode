@@ -331,6 +331,24 @@
                             "Previous-pane did not return to the original vertical pane")))
   "ok-vertical-tab-focus")
 
+(defun tmux-cc-e2e-test-kill-pane ()
+  "Verify killing a pane removes both the tmux pane and its Emacs buffer."
+  (tmux-cc-e2e--visit-first-pane)
+  (tmux-cc-split-horizontal)
+  (tmux-cc-e2e--wait 20)
+  (tmux-cc-focus-next-pane)
+  (tmux-cc-e2e--wait 10)
+  (let* ((pane-id (tmux-cc-e2e--visible-pane-id))
+         (buffer (window-buffer (selected-window))))
+    (tmux-cc-e2e--assert pane-id "No pane selected for kill-pane test")
+    (tmux-cc-kill-pane pane-id)
+    (tmux-cc-e2e--wait 20)
+    (tmux-cc-e2e--assert (not (buffer-live-p buffer))
+                          "Killed pane buffer is still live")
+    (tmux-cc-e2e--assert (not (gethash pane-id tmux-cc-panes))
+                          "Killed pane is still tracked"))
+  "ok-kill-pane")
+
 (defun tmux-cc-e2e-test-emacs-window-arrangement ()
   "Verify normal Emacs window arrangement stays local."
   (tmux-cc-e2e--visit-first-pane)
@@ -532,6 +550,12 @@
    #'tmux-cc-e2e-test-start
    #'tmux-cc-e2e-test-vertical-tab-focus))
 
+(defun tmux-cc-e2e-case-kill-pane ()
+  "Run the direct kill-pane e2e case."
+  (tmux-cc-e2e--run-isolated
+   #'tmux-cc-e2e-test-start
+   #'tmux-cc-e2e-test-kill-pane))
+
 (defun tmux-cc-e2e-case-emacs-window-arrangement ()
   "Run the Emacs-only window arrangement e2e case."
   (tmux-cc-e2e--run-isolated
@@ -613,6 +637,7 @@
            ("emacs-window-arrangement" . tmux-cc-e2e-case-emacs-window-arrangement)
            ("splits-focus" . tmux-cc-e2e-case-splits-focus)
            ("vertical-tab-focus" . tmux-cc-e2e-case-vertical-tab-focus)
+           ("kill-pane" . tmux-cc-e2e-case-kill-pane)
            ("manager-new-window" . tmux-cc-e2e-case-manager-new-window)
            ("switch-window" . tmux-cc-e2e-case-switch-window)
            ("manager-new-session" . tmux-cc-e2e-case-manager-new-session)
