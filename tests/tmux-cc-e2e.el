@@ -13,6 +13,17 @@
 (defconst tmux-cc-e2e-window-name "flow-win")
 (defconst tmux-cc-e2e-session-2 "ccflow-2")
 
+(defun tmux-cc-e2e--kill-test-sessions ()
+  "Kill the tmux sessions and server used by the live e2e harness."
+  (dolist (session (list tmux-cc-e2e-session tmux-cc-e2e-session-2))
+    (ignore-errors
+      (call-process "tmux" nil nil nil
+                    "-L" tmux-cc-e2e-socket
+                    "kill-session"
+                    "-t" session)))
+  (ignore-errors
+    (call-process "tmux" nil nil nil "-L" tmux-cc-e2e-socket "kill-server")))
+
 (defun tmux-cc-e2e--wait (&optional rounds)
   "Wait for tmux control-mode output for ROUNDS iterations."
   (dotimes (_ (or rounds 30))
@@ -57,8 +68,7 @@
   (ignore-errors
     (when (process-live-p tmux-cc-process)
       (delete-process tmux-cc-process)))
-  (ignore-errors
-    (call-process "tmux" nil nil nil "-L" tmux-cc-e2e-socket "kill-server"))
+  (tmux-cc-e2e--kill-test-sessions)
   (setq tmux-cc--cmd-queue nil
         tmux-cc--buffer ""
         tmux-cc--current-cmd-lines nil
@@ -110,9 +120,10 @@
   (list :process-live (process-live-p tmux-cc-process)
         :selected-buffer (buffer-name (window-buffer (selected-window)))
         :pane-count (hash-table-count tmux-cc-panes)
-        :preview-window (and (window-live-p tmux-cc--manager-preview-window) t)
-        :preview-buffer (and (window-live-p tmux-cc--manager-preview-window)
-                             (buffer-name (window-buffer tmux-cc--manager-preview-window)))))
+        :preview-active (and (overlayp tmux-cc--manager-preview-overlay) t)
+        :preview-pane-id tmux-cc--manager-preview-pane-id
+        :preview-text (and (overlayp tmux-cc--manager-preview-overlay)
+                           (overlay-get tmux-cc--manager-preview-overlay 'after-string))))
 
 (defun tmux-cc-e2e--manager-ready-p ()
   "Return non-nil when the tmux manager has rendered at least one target."
@@ -195,14 +206,15 @@
    (format "%s label %s" target-type label-substring)))
 
 (defun tmux-cc-e2e-manager-preview-id (target-type target-id)
-  "Preview TARGET-TYPE/TARGET-ID from the manager and return the preview buffer."
+  "Preview TARGET-TYPE/TARGET-ID from the manager and return preview state."
   (tmux-cc-e2e-manager-goto-id target-type target-id)
   (with-current-buffer tmux-cc-manager-buffer-name
     (tmux-cc-manager-toggle-preview))
   (tmux-cc-e2e--wait 5)
-  (tmux-cc-e2e--assert (window-live-p tmux-cc--manager-preview-window)
-                        "Preview window did not open for %s %s" target-type target-id)
-  (buffer-name (window-buffer tmux-cc--manager-preview-window)))
+  (tmux-cc-e2e--assert (overlayp tmux-cc--manager-preview-overlay)
+                        "Preview did not open for %s %s" target-type target-id)
+  (list :pane-id tmux-cc--manager-preview-pane-id
+        :text (overlay-get tmux-cc--manager-preview-overlay 'after-string)))
 
 (defun tmux-cc-e2e-manager-visit-id (target-type target-id)
   "Visit TARGET-TYPE/TARGET-ID from the manager and return the selected buffer."
@@ -256,25 +268,41 @@
   "ok-command")
 
 (defun tmux-cc-e2e-test-preview ()
-  "Verify manager preview for both a window and a pane."
+  "Verify manager preview for session, window, and pane targets."
   (let* ((targets (tmux-cc-e2e-manager-targets))
+         (session (cl-find-if (lambda (item) (eq (plist-get item :type) 'session))
+                              targets))
          (window-id (plist-get (cl-find-if (lambda (item) (eq (plist-get item :type) 'window))
                                            targets)
                                :id))
+         (window-pane-id (plist-get (cl-find-if (lambda (item) (eq (plist-get item :type) 'window))
+                                                targets)
+                                    :pane))
          (pane-id (plist-get (cl-find-if (lambda (item) (eq (plist-get item :type) 'pane))
                                          targets)
                              :id)))
+    (tmux-cc-e2e--assert session "No session target available for preview")
     (tmux-cc-e2e--assert window-id "No window target available for preview")
+    (tmux-cc-e2e--assert window-pane-id "No window preview pane available")
     (tmux-cc-e2e--assert pane-id "No pane target available for preview")
-    (tmux-cc-e2e--assert
-     (string-prefix-p tmux-cc-pane-buffer-prefix
-                      (tmux-cc-e2e-manager-preview-id 'window window-id))
-     "Window preview did not show a pane buffer")
+    (let ((session-preview (tmux-cc-e2e-manager-preview-id
+                            'session
+                            (plist-get session :id))))
+      (tmux-cc-e2e--assert (equal (plist-get session-preview :pane-id)
+                                  (plist-get session :pane))
+                            "Session preview did not resolve to the session pane")
+      (tmux-cc-manager-hide-preview))
+    (let ((window-preview (tmux-cc-e2e-manager-preview-id 'window window-id)))
+      (tmux-cc-e2e--assert (equal (plist-get window-preview :pane-id) window-pane-id)
+                            "Window preview did not resolve to the window pane")
+      (tmux-cc-e2e--assert (string-match-p "Preview"
+                                          (plist-get window-preview :text))
+                            "Window preview did not render inline text"))
     (tmux-cc-e2e-manager-goto-id 'pane pane-id)
     (with-current-buffer tmux-cc-manager-buffer-name
       (tmux-cc-manager-toggle-preview))
     (tmux-cc-e2e--wait 5)
-    (tmux-cc-e2e--assert (not (window-live-p tmux-cc--manager-preview-window))
+    (tmux-cc-e2e--assert (not (overlayp tmux-cc--manager-preview-overlay))
                           "Preview toggle did not close the active preview"))
   "ok-preview")
 
@@ -657,33 +685,35 @@
 
 (defun tmux-cc-e2e-run ()
   "Run the full live tmux-cc end-to-end suite against the current Emacs server."
-  (let ((steps
-         '(("start" . tmux-cc-e2e-case-start)
-           ("command" . tmux-cc-e2e-case-command)
-           ("preview" . tmux-cc-e2e-case-preview)
-           ("help" . tmux-cc-e2e-case-help)
-           ("emacs-window-arrangement" . tmux-cc-e2e-case-emacs-window-arrangement)
-           ("mixed-window-navigation" . tmux-cc-e2e-case-mixed-window-navigation)
-           ("splits-focus" . tmux-cc-e2e-case-splits-focus)
-           ("vertical-tab-focus" . tmux-cc-e2e-case-vertical-tab-focus)
-           ("kill-pane" . tmux-cc-e2e-case-kill-pane)
-           ("manager-new-window" . tmux-cc-e2e-case-manager-new-window)
-           ("switch-window" . tmux-cc-e2e-case-switch-window)
-           ("manager-new-session" . tmux-cc-e2e-case-manager-new-session)
-           ("switch-session" . tmux-cc-e2e-case-switch-session)
-           ("manager-visit-window" . tmux-cc-e2e-case-manager-visit-window)
-           ("manager-visit-pane" . tmux-cc-e2e-case-manager-visit-pane)
-           ("manager-command" . tmux-cc-e2e-case-manager-command)
-           ("manager-delete-pane" . tmux-cc-e2e-case-manager-delete-pane)
-           ("manager-delete-window" . tmux-cc-e2e-case-manager-delete-window)
-           ("manager-delete-session" . tmux-cc-e2e-case-manager-delete-session)
-           ("detach" . tmux-cc-e2e-case-detach))))
-    (dolist (step steps)
-      (condition-case err
-          (funcall (cdr step))
-        (error
-         (error "e2e step %s failed: %s" (car step) (error-message-string err)))))
-    "ok"))
+  (unwind-protect
+      (let ((steps
+             '(("start" . tmux-cc-e2e-case-start)
+               ("command" . tmux-cc-e2e-case-command)
+               ("preview" . tmux-cc-e2e-case-preview)
+               ("help" . tmux-cc-e2e-case-help)
+               ("emacs-window-arrangement" . tmux-cc-e2e-case-emacs-window-arrangement)
+               ("mixed-window-navigation" . tmux-cc-e2e-case-mixed-window-navigation)
+               ("splits-focus" . tmux-cc-e2e-case-splits-focus)
+               ("vertical-tab-focus" . tmux-cc-e2e-case-vertical-tab-focus)
+               ("kill-pane" . tmux-cc-e2e-case-kill-pane)
+               ("manager-new-window" . tmux-cc-e2e-case-manager-new-window)
+               ("switch-window" . tmux-cc-e2e-case-switch-window)
+               ("manager-new-session" . tmux-cc-e2e-case-manager-new-session)
+               ("switch-session" . tmux-cc-e2e-case-switch-session)
+               ("manager-visit-window" . tmux-cc-e2e-case-manager-visit-window)
+               ("manager-visit-pane" . tmux-cc-e2e-case-manager-visit-pane)
+               ("manager-command" . tmux-cc-e2e-case-manager-command)
+               ("manager-delete-pane" . tmux-cc-e2e-case-manager-delete-pane)
+               ("manager-delete-window" . tmux-cc-e2e-case-manager-delete-window)
+               ("manager-delete-session" . tmux-cc-e2e-case-manager-delete-session)
+               ("detach" . tmux-cc-e2e-case-detach))))
+        (dolist (step steps)
+          (condition-case err
+              (funcall (cdr step))
+            (error
+             (error "e2e step %s failed: %s" (car step) (error-message-string err)))))
+        "ok")
+    (tmux-cc-e2e-stop)))
 
 (provide 'tmux-cc-e2e)
 ;;; tmux-cc-e2e.el ends here

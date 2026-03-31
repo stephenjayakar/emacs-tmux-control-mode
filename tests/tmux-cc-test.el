@@ -1,5 +1,6 @@
 ;;; tmux-cc-test.el --- Tests for tmux-cc -*- lexical-binding: t; -*-
 
+(require 'cl-lib)
 (require 'ert)
 (require 'tmux-cc)
 
@@ -97,6 +98,141 @@
   (should (equal (tmux-cc--manager-target-pane-id 'pane "%9" nil) "%9"))
   (should (equal (tmux-cc--manager-target-pane-id 'window "@1" "%1") "%1"))
   (should (equal (tmux-cc--manager-target-pane-id 'session "main" "%3") "%3")))
+
+(ert-deftest tmux-cc-manager-inline-preview-toggle-test ()
+  (let* ((tmux-cc-panes (make-hash-table :test 'equal))
+         (preview-buffer (get-buffer-create "*tmux-cc-preview*"))
+         (tmux-cc-manager-preview-window-size 2))
+    (puthash "%1" preview-buffer tmux-cc-panes)
+    (unwind-protect
+        (progn
+          (with-current-buffer preview-buffer
+            (erase-buffer)
+            (insert "one\ntwo\nthree\n"))
+          (tmux-cc--render-manager-buffer
+           '("main\t$1\t1\t1")
+           '("main\teditor\t@1\t1\tabcd,80x24,0,0,0\t%1")
+           '("main\t@1\t%1\t1\tzsh\t80x24"))
+          (with-current-buffer (get-buffer-create tmux-cc-manager-buffer-name)
+            (goto-char (point-min))
+            (search-forward "editor")
+            (tmux-cc-manager-toggle-preview)
+            (should (overlayp tmux-cc--manager-preview-overlay))
+            (should (equal tmux-cc--manager-preview-pane-id "%1"))
+            (should (equal tmux-cc--manager-preview-target-type 'window))
+            (should (equal tmux-cc--manager-preview-target-id "@1"))
+            (should (string-match-p (regexp-quote "Preview main:editor (%1)")
+                                    (overlay-get tmux-cc--manager-preview-overlay
+                                                 'after-string)))
+            (should (string-match-p "two"
+                                    (overlay-get tmux-cc--manager-preview-overlay
+                                                 'after-string)))
+            (should (string-match-p "three"
+                                    (overlay-get tmux-cc--manager-preview-overlay
+                                                 'after-string)))
+            (should-not (string-match-p "one"
+                                        (overlay-get tmux-cc--manager-preview-overlay
+                                                     'after-string)))
+            (tmux-cc-manager-toggle-preview)
+            (should-not (overlayp tmux-cc--manager-preview-overlay))
+            (should-not tmux-cc--manager-preview-pane-id)))
+      (when (buffer-live-p preview-buffer)
+        (kill-buffer preview-buffer))
+      (tmux-cc-manager-hide-preview))))
+
+(ert-deftest tmux-cc-manager-inline-preview-rerender-test ()
+  (let* ((tmux-cc-panes (make-hash-table :test 'equal))
+         (preview-buffer (get-buffer-create "*tmux-cc-preview*")))
+    (puthash "%1" preview-buffer tmux-cc-panes)
+    (unwind-protect
+        (progn
+          (with-current-buffer preview-buffer
+            (erase-buffer)
+            (insert "alpha\nbeta\n"))
+          (tmux-cc--render-manager-buffer
+           '("main\t$1\t1\t1")
+           '("main\teditor\t@1\t1\tabcd,80x24,0,0,0\t%1")
+           '("main\t@1\t%1\t1\tzsh\t80x24"))
+          (with-current-buffer (get-buffer-create tmux-cc-manager-buffer-name)
+            (goto-char (point-min))
+            (search-forward "editor")
+            (tmux-cc-manager-toggle-preview))
+          (tmux-cc--render-manager-buffer
+           '("main\t$1\t1\t1")
+           '("main\teditor\t@1\t1\tabcd,80x24,0,0,0\t%1")
+           '("main\t@1\t%1\t1\tzsh\t80x24"))
+          (should (overlayp tmux-cc--manager-preview-overlay))
+          (should (equal tmux-cc--manager-preview-target-type 'window))
+          (should (equal tmux-cc--manager-preview-target-id "@1"))
+          (should (equal tmux-cc--manager-preview-pane-id "%1")))
+      (when (buffer-live-p preview-buffer)
+        (kill-buffer preview-buffer))
+      (tmux-cc-manager-hide-preview))))
+
+(ert-deftest tmux-cc-manager-inline-preview-refreshes-with-output-test ()
+  (let* ((tmux-cc-panes (make-hash-table :test 'equal))
+         (preview-buffer (get-buffer-create "*tmux-cc-preview*"))
+         (preview-process (make-process
+                           :name "tmux-cc-preview"
+                           :buffer preview-buffer
+                           :command '("sleep" "10")
+                           :connection-type 'pipe)))
+    (puthash "%1" preview-buffer tmux-cc-panes)
+    (unwind-protect
+        (cl-letf (((symbol-function 'term-emulate-terminal)
+                   (lambda (proc string)
+                     (with-current-buffer (process-buffer proc)
+                       (goto-char (point-max))
+                       (insert string)))))
+          (tmux-cc--render-manager-buffer
+           '("main\t$1\t1\t1")
+           '("main\teditor\t@1\t1\tabcd,80x24,0,0,0\t%1")
+           '("main\t@1\t%1\t1\tzsh\t80x24"))
+          (with-current-buffer (get-buffer-create tmux-cc-manager-buffer-name)
+            (goto-char (point-min))
+            (search-forward "editor")
+            (tmux-cc-manager-toggle-preview))
+          (should (string-match-p "No pane output yet"
+                                  (overlay-get tmux-cc--manager-preview-overlay
+                                               'after-string)))
+          (tmux-cc--handle-output "%1" "hello\\012world")
+          (should (string-match-p "hello"
+                                  (overlay-get tmux-cc--manager-preview-overlay
+                                               'after-string)))
+          (should (string-match-p "world"
+                                  (overlay-get tmux-cc--manager-preview-overlay
+                                               'after-string))))
+      (ignore-errors
+        (when (process-live-p preview-process)
+          (delete-process preview-process)))
+      (when (buffer-live-p preview-buffer)
+        (kill-buffer preview-buffer))
+      (tmux-cc-manager-hide-preview))))
+
+(ert-deftest tmux-cc-reconcile-pane-buffers-hides-inline-preview-test ()
+  (let* ((tmux-cc-panes (make-hash-table :test 'equal))
+         (preview-buffer (get-buffer-create "*tmux-cc-preview*")))
+    (puthash "%1" preview-buffer tmux-cc-panes)
+    (unwind-protect
+        (progn
+          (with-current-buffer preview-buffer
+            (erase-buffer)
+            (insert "gone\n"))
+          (tmux-cc--render-manager-buffer
+           '("main\t$1\t1\t1")
+           '("main\teditor\t@1\t1\tabcd,80x24,0,0,0\t%1")
+           '("main\t@1\t%1\t1\tzsh\t80x24"))
+          (with-current-buffer (get-buffer-create tmux-cc-manager-buffer-name)
+            (goto-char (point-min))
+            (search-forward "editor")
+            (tmux-cc-manager-toggle-preview))
+          (should (overlayp tmux-cc--manager-preview-overlay))
+          (tmux-cc--reconcile-pane-buffers nil)
+          (should-not (overlayp tmux-cc--manager-preview-overlay))
+          (should-not tmux-cc--manager-preview-pane-id))
+      (when (buffer-live-p preview-buffer)
+        (kill-buffer preview-buffer))
+      (tmux-cc-manager-hide-preview))))
 
 (ert-deftest tmux-cc-handle-error-stops-session-test ()
   (let* ((tmux-cc-panes (make-hash-table :test 'equal))

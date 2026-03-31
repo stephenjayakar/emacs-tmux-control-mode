@@ -7,4 +7,7 @@ FORM="${1:-"(tmux-cc-e2e-run)"}"
 emacsclient -e \
   "(progn
      (load-file \"$ROOT/tests/tmux-cc-e2e.el\")
-     $FORM)"
+     (unwind-protect
+         $FORM
+       (ignore-errors
+         (tmux-cc-e2e-stop))))"
