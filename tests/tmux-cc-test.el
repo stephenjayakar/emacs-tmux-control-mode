@@ -226,6 +226,94 @@
         (kill-buffer preview-buffer))
       (tmux-cc-manager-hide-preview))))
 
+(ert-deftest tmux-cc-apply-pane-history-replays-history-and-queued-output-test ()
+  (let* ((tmux-cc-panes (make-hash-table :test 'equal))
+         (tmux-cc--pane-history-state (make-hash-table :test 'equal))
+         (tmux-cc--pane-history-pending-output (make-hash-table :test 'equal))
+         (buffer (get-buffer-create "*tmux-cc-history*")))
+    (puthash "%1" buffer tmux-cc-panes)
+    (unwind-protect
+        (let ((proc (make-process
+                     :name "tmux-cc-history"
+                     :buffer buffer
+                     :command '("sleep" "10")
+                     :connection-type 'pipe)))
+          (puthash "%1" '("new output") tmux-cc--pane-history-pending-output)
+          (cl-letf (((symbol-function 'term-emulate-terminal)
+                     (lambda (target-proc text)
+                       (with-current-buffer (process-buffer target-proc)
+                         (goto-char (point-max))
+                         (insert (replace-regexp-in-string "\r\n" "\n" text))))))
+            (tmux-cc--apply-pane-history "%1" '("old 1" "old 2")))
+          (with-current-buffer buffer
+            (should (equal (buffer-string) "old 1\nold 2\nnew output")))
+          (should (eq (gethash "%1" tmux-cc--pane-history-state) 'loaded))
+          (should-not (gethash "%1" tmux-cc--pane-history-pending-output))
+          (delete-process proc))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest tmux-cc-request-pane-history-sends-capture-pane-test ()
+  (let* ((tmux-cc-process t)
+         (tmux-cc-panes (make-hash-table :test 'equal))
+         (tmux-cc--pane-history-state (make-hash-table :test 'equal))
+         (tmux-cc--pane-history-pending-output (make-hash-table :test 'equal))
+         (tmux-cc-pane-history-lines 50)
+         (buffer (get-buffer-create "*tmux-cc-history*"))
+         (proc (make-process
+                :name "tmux-cc-history"
+                :buffer buffer
+                :command '("sleep" "10")
+                :connection-type 'pipe))
+         sent-command)
+    (puthash "%9" buffer tmux-cc-panes)
+    (unwind-protect
+        (cl-letf (((symbol-function 'process-live-p)
+                   (lambda (_process) t))
+                  ((symbol-function 'term-emulate-terminal)
+                   (lambda (target-proc text)
+                     (with-current-buffer (process-buffer target-proc)
+                       (goto-char (point-max))
+                       (insert (replace-regexp-in-string "\r\n" "\n" text)))))
+                  ((symbol-function 'tmux-cc-send-command)
+                   (lambda (cmd callback)
+                     (setq sent-command cmd)
+                     (funcall callback '("line a" "line b")))))
+          (tmux-cc--request-pane-history "%9")
+          (should (equal sent-command
+                         "capture-pane -e -p -S -50 -E - -t '%9'"))
+          (with-current-buffer buffer
+            (should (equal (buffer-string) "line a\nline b\n")))
+          (should (eq (gethash "%9" tmux-cc--pane-history-state) 'loaded)))
+      (when (process-live-p proc)
+        (delete-process proc))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest tmux-cc-handle-output-queues-while-history-pending-test ()
+  (let* ((tmux-cc-panes (make-hash-table :test 'equal))
+         (tmux-cc--pane-history-state (make-hash-table :test 'equal))
+         (tmux-cc--pane-history-pending-output (make-hash-table :test 'equal))
+         (buffer (get-buffer-create "*tmux-cc-history*"))
+         (proc (make-process
+                :name "tmux-cc-history"
+                :buffer buffer
+                :command '("sleep" "10")
+                :connection-type 'pipe)))
+    (puthash "%2" buffer tmux-cc-panes)
+    (puthash "%2" 'pending tmux-cc--pane-history-state)
+    (unwind-protect
+        (cl-letf (((symbol-function 'term-emulate-terminal)
+                   (lambda (&rest _)
+                     (error "term-emulate-terminal should not run while history pending"))))
+          (tmux-cc--handle-output "%2" "hello\\012world")
+          (should (equal (gethash "%2" tmux-cc--pane-history-pending-output)
+                         '("hello\nworld"))))
+      (when (process-live-p proc)
+        (delete-process proc))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest tmux-cc-handle-error-stops-session-test ()
   (let* ((tmux-cc-panes (make-hash-table :test 'equal))
          (process-buffer (generate-new-buffer "*tmux-cc-test*"))

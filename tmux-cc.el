@@ -117,6 +117,11 @@ normally while inside a tmux pane."
   :type 'string
   :group 'tmux-cc)
 
+(defcustom tmux-cc-pane-history-lines 200
+  "Number of history lines to backfill into pane buffers after attach."
+  :type 'integer
+  :group 'tmux-cc)
+
 (defcustom tmux-cc-manager-preview-window-size 12
   "Maximum number of lines to show in the inline tmux manager preview."
   :type 'integer
@@ -140,6 +145,12 @@ normally while inside a tmux pane."
 
 (defvar tmux-cc-panes (make-hash-table :test 'equal)
   "Hash table mapping pane ID (e.g. \"%1\") to its Emacs buffer.")
+
+(defvar tmux-cc--pane-history-state (make-hash-table :test 'equal)
+  "Hash table tracking pane history backfill state by pane id.")
+
+(defvar tmux-cc--pane-history-pending-output (make-hash-table :test 'equal)
+  "Hash table storing queued pane output while history backfill is pending.")
 
 (defvar tmux-cc--cmd-queue nil
   "FIFO queue of callbacks for tmux commands.")
@@ -353,6 +364,8 @@ When DELAY is non-nil, wait DELAY seconds before rechecking."
        (remhash pane-id tmux-cc-panes))
      tmux-cc-panes)
     (clrhash tmux-cc-panes)
+    (clrhash tmux-cc--pane-history-state)
+    (clrhash tmux-cc--pane-history-pending-output)
     (when (and target-process (buffer-live-p (process-buffer target-process)))
       (kill-buffer (process-buffer target-process)))
     (setq tmux-cc-process nil
@@ -518,6 +531,12 @@ to the remote side, preventing early echoing of commands."
   (unless (hash-table-p tmux-cc-panes)
     (setq tmux-cc-panes (make-hash-table :test 'equal)))
   (clrhash tmux-cc-panes)
+  (unless (hash-table-p tmux-cc--pane-history-state)
+    (setq tmux-cc--pane-history-state (make-hash-table :test 'equal)))
+  (clrhash tmux-cc--pane-history-state)
+  (unless (hash-table-p tmux-cc--pane-history-pending-output)
+    (setq tmux-cc--pane-history-pending-output (make-hash-table :test 'equal)))
+  (clrhash tmux-cc--pane-history-pending-output)
   (setq tmux-cc--startup-refresh-pending t)
 
   (setq tmux-cc-process
@@ -665,11 +684,51 @@ and will print ']2;title' directly into the buffer."
          (buf (gethash pane-id tmux-cc-panes)))
     (unless (buffer-live-p buf)
       (setq buf (tmux-cc-create-pane pane-id)))
-    (let ((proc (get-buffer-process buf)))
-      (when proc
-        (term-emulate-terminal proc clean))))
+    (if (eq (gethash pane-id tmux-cc--pane-history-state) 'pending)
+        (puthash pane-id
+                 (append (gethash pane-id tmux-cc--pane-history-pending-output)
+                         (list clean))
+                 tmux-cc--pane-history-pending-output)
+      (let ((proc (get-buffer-process buf)))
+        (when proc
+          (term-emulate-terminal proc clean)))))
   (when (equal pane-id tmux-cc--manager-preview-pane-id)
     (tmux-cc--manager-refresh-preview)))
+
+(defun tmux-cc--apply-pane-history (pane-id lines)
+  "Apply captured history LINES and queued output into pane buffer for PANE-ID."
+  (let ((buffer (gethash pane-id tmux-cc-panes))
+        (history (string-join lines "\r\n")))
+    (when (buffer-live-p buffer)
+      (let ((proc (get-buffer-process buffer)))
+        (when proc
+          (when (not (string-empty-p history))
+            ;; Replay history through term emulation so colors/cursor state match.
+            (term-emulate-terminal proc (concat history "\r\n")))
+          (dolist (chunk (gethash pane-id tmux-cc--pane-history-pending-output))
+            (term-emulate-terminal proc chunk)))))
+    (puthash pane-id 'loaded tmux-cc--pane-history-state)
+    (remhash pane-id tmux-cc--pane-history-pending-output)
+    (when (equal pane-id tmux-cc--manager-preview-pane-id)
+      (tmux-cc--manager-refresh-preview))))
+
+(defun tmux-cc--request-pane-history (pane-id)
+  "Request scrollback history for tmux PANE-ID when not already loaded."
+  (when (and (process-live-p tmux-cc-process)
+             (buffer-live-p (gethash pane-id tmux-cc-panes))
+             (null (gethash pane-id tmux-cc--pane-history-state)))
+    (puthash pane-id 'pending tmux-cc--pane-history-state)
+    (tmux-cc-send-command
+     (format "capture-pane -e -p -S -%d -E - -t %s"
+             tmux-cc-pane-history-lines
+             (tmux-cc--tmux-target pane-id))
+     (lambda (lines)
+       (tmux-cc--apply-pane-history pane-id lines)))))
+
+(defun tmux-cc--request-pane-history-for-lines (panes)
+  "Request history for pane ids present in tmux PANE output lines."
+  (dolist (pane-id (tmux-cc--pane-id-list-from-pane-lines panes))
+    (tmux-cc--request-pane-history pane-id)))
 
 (defun tmux-cc--handle-layout-change (_window-id layout-str)
   "Handle layout change for WINDOW-ID with new LAYOUT-STR."
@@ -1092,6 +1151,7 @@ When CALLBACK is non-nil, invoke it after the manager finishes rendering."
          "list-panes -a -F '#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_active}\t#{pane_current_command}\t#{pane_width}x#{pane_height}'"
          (lambda (panes)
            (tmux-cc--reconcile-pane-buffers panes)
+           (tmux-cc--request-pane-history-for-lines panes)
            (tmux-cc--render-manager-buffer sessions windows panes)
            (when (functionp callback)
              (funcall callback sessions windows panes)))))))))
