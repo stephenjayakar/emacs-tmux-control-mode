@@ -117,24 +117,19 @@
             (goto-char (point-min))
             (search-forward "editor")
             (tmux-cc-manager-toggle-preview)
-            (should (overlayp tmux-cc--manager-preview-overlay))
             (should (equal tmux-cc--manager-preview-pane-id "%1"))
             (should (equal tmux-cc--manager-preview-target-type 'window))
             (should (equal tmux-cc--manager-preview-target-id "@1"))
             (should (string-match-p (regexp-quote "Preview main:editor (%1)")
-                                    (overlay-get tmux-cc--manager-preview-overlay
-                                                 'after-string)))
+                                    (tmux-cc--manager-preview-rendered-string)))
             (should (string-match-p "two"
-                                    (overlay-get tmux-cc--manager-preview-overlay
-                                                 'after-string)))
+                                    (tmux-cc--manager-preview-rendered-string)))
             (should (string-match-p "three"
-                                    (overlay-get tmux-cc--manager-preview-overlay
-                                                 'after-string)))
+                                    (tmux-cc--manager-preview-rendered-string)))
             (should-not (string-match-p "one"
-                                        (overlay-get tmux-cc--manager-preview-overlay
-                                                     'after-string)))
+                                        (tmux-cc--manager-preview-rendered-string)))
             (tmux-cc-manager-toggle-preview)
-            (should-not (overlayp tmux-cc--manager-preview-overlay))
+            (should-not (tmux-cc--manager-preview-rendered-string))
             (should-not tmux-cc--manager-preview-pane-id)))
       (when (buffer-live-p preview-buffer)
         (kill-buffer preview-buffer))
@@ -161,7 +156,7 @@
            '("main\t$1\t1\t1")
            '("main\teditor\t@1\t1\tabcd,80x24,0,0,0\t%1")
            '("main\t@1\t%1\t1\tzsh\t80x24"))
-          (should (overlayp tmux-cc--manager-preview-overlay))
+          (should (tmux-cc--manager-preview-rendered-string))
           (should (equal tmux-cc--manager-preview-target-type 'window))
           (should (equal tmux-cc--manager-preview-target-id "@1"))
           (should (equal tmux-cc--manager-preview-pane-id "%1")))
@@ -193,15 +188,12 @@
             (search-forward "editor")
             (tmux-cc-manager-toggle-preview))
           (should (string-match-p "No pane output yet"
-                                  (overlay-get tmux-cc--manager-preview-overlay
-                                               'after-string)))
+                                  (tmux-cc--manager-preview-rendered-string)))
           (tmux-cc--handle-output "%1" "hello\\012world")
           (should (string-match-p "hello"
-                                  (overlay-get tmux-cc--manager-preview-overlay
-                                               'after-string)))
+                                  (tmux-cc--manager-preview-rendered-string)))
           (should (string-match-p "world"
-                                  (overlay-get tmux-cc--manager-preview-overlay
-                                               'after-string))))
+                                  (tmux-cc--manager-preview-rendered-string))))
       (ignore-errors
         (when (process-live-p preview-process)
           (delete-process preview-process)))
@@ -226,9 +218,9 @@
             (goto-char (point-min))
             (search-forward "editor")
             (tmux-cc-manager-toggle-preview))
-          (should (overlayp tmux-cc--manager-preview-overlay))
+          (should (tmux-cc--manager-preview-rendered-string))
           (tmux-cc--reconcile-pane-buffers nil)
-          (should-not (overlayp tmux-cc--manager-preview-overlay))
+          (should-not (tmux-cc--manager-preview-rendered-string))
           (should-not tmux-cc--manager-preview-pane-id))
       (when (buffer-live-p preview-buffer)
         (kill-buffer preview-buffer))

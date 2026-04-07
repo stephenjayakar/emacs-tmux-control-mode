@@ -168,6 +168,15 @@ normally while inside a tmux pane."
 (defvar tmux-cc--manager-preview-label nil
   "Manager target label currently shown in the tmux manager preview.")
 
+(defvar tmux-cc--manager-last-sessions nil
+  "Last tmux session lines used to render the manager buffer.")
+
+(defvar tmux-cc--manager-last-windows nil
+  "Last tmux window lines used to render the manager buffer.")
+
+(defvar tmux-cc--manager-last-panes nil
+  "Last tmux pane lines used to render the manager buffer.")
+
 (defface tmux-cc-manager-preview-header
   '((((background light)) :foreground "midnight blue" :weight bold)
     (t :foreground "light sky blue" :weight bold))
@@ -1112,14 +1121,17 @@ When CALLBACK is non-nil, invoke it after the manager finishes rendering."
     (_ pane-id)))
 
 (defun tmux-cc--manager-preview-delete-overlay ()
-  "Delete the tmux manager preview overlay without clearing preview metadata."
+  "Delete any legacy manager preview overlay.
+Do not clear preview metadata."
   (when (overlayp tmux-cc--manager-preview-overlay)
     (delete-overlay tmux-cc--manager-preview-overlay))
   (setq tmux-cc--manager-preview-overlay nil))
 
 (defun tmux-cc--manager-preview-live-p ()
-  "Return non-nil when the tmux manager preview overlay is active."
-  (overlayp tmux-cc--manager-preview-overlay))
+  "Return non-nil when the tmux manager preview is active."
+  (and tmux-cc--manager-preview-target-type
+       tmux-cc--manager-preview-target-id
+       tmux-cc--manager-preview-pane-id))
 
 (defun tmux-cc--manager-preview-snapshot (pane-id)
   "Return a recent multiline snapshot string for tmux PANE-ID."
@@ -1150,7 +1162,7 @@ When CALLBACK is non-nil, invoke it after the manager finishes rendering."
   (let* ((snapshot (tmux-cc--manager-preview-snapshot pane-id))
          (lines (split-string snapshot "\n"))
          (header (propertize
-                  (format "\n  | Preview %s (%s)\n"
+                  (format "  | Preview %s (%s)\n"
                           (or label pane-id)
                           pane-id)
                   'face 'tmux-cc-manager-preview-header))
@@ -1162,6 +1174,37 @@ When CALLBACK is non-nil, invoke it after the manager finishes rendering."
            lines
            "\n")))
     (concat header body "\n")))
+
+(defun tmux-cc--manager-preview-rendered-string ()
+  "Return the rendered preview string currently visible in the manager buffer."
+  (when (buffer-live-p (get-buffer tmux-cc-manager-buffer-name))
+    (with-current-buffer tmux-cc-manager-buffer-name
+      (save-excursion
+        (goto-char (point-min))
+        (let ((start nil)
+              (end nil))
+          (while (and (< (point) (point-max)) (not start))
+            (when (get-text-property (point) 'tmux-preview)
+              (setq start (line-beginning-position))
+              (while (and (< (point) (point-max))
+                          (get-text-property (point) 'tmux-preview))
+                (forward-line 1))
+              (setq end (point)))
+            (unless start
+              (forward-line 1)))
+          (when (and start end)
+            (buffer-substring-no-properties start end)))))))
+
+(defun tmux-cc--manager-target-preview-active-p (target-type target-id)
+  "Return non-nil when the active preview belongs under TARGET-TYPE/TARGET-ID."
+  (and (equal target-type tmux-cc--manager-preview-target-type)
+       (equal target-id tmux-cc--manager-preview-target-id)))
+
+(defun tmux-cc--manager-insert-preview-block (pane-id label)
+  "Insert an inline preview block for PANE-ID and LABEL at point."
+  (let ((block (tmux-cc--manager-preview-string pane-id label)))
+    (add-text-properties 0 (length block) '(tmux-preview t rear-nonsticky t) block)
+    (insert block)))
 
 (defun tmux-cc--manager-find-target (target-type target-id)
   "Move point to manager TARGET-TYPE and TARGET-ID and return its metadata."
@@ -1177,57 +1220,48 @@ When CALLBACK is non-nil, invoke it after the manager finishes rendering."
       (forward-line 1))
     nil))
 
-(defun tmux-cc--manager-show-preview (target-type target-id pane-id label)
-  "Show inline preview for manager TARGET-TYPE, TARGET-ID, PANE-ID, and LABEL."
+(defun tmux-cc--manager-set-preview (target-type target-id pane-id label)
+  "Store preview metadata for manager TARGET-TYPE, TARGET-ID, PANE-ID, and LABEL."
   (tmux-cc--manager-preview-delete-overlay)
-  (let ((overlay (make-overlay (line-end-position) (line-end-position))))
-    (overlay-put overlay 'after-string
-                 (tmux-cc--manager-preview-string pane-id label))
-    (overlay-put overlay 'evaporate t)
-    (overlay-put overlay 'priority 1000)
-    (setq tmux-cc--manager-preview-overlay overlay
-          tmux-cc--manager-preview-target-type target-type
-          tmux-cc--manager-preview-target-id target-id
-          tmux-cc--manager-preview-pane-id pane-id
-          tmux-cc--manager-preview-label label)))
+  (setq tmux-cc--manager-preview-target-type target-type
+        tmux-cc--manager-preview-target-id target-id
+        tmux-cc--manager-preview-pane-id pane-id
+        tmux-cc--manager-preview-label label))
 
-(defun tmux-cc--manager-restore-preview ()
-  "Restore the tmux manager preview after rerendering the manager buffer."
-  (when (and tmux-cc--manager-preview-target-type
-             tmux-cc--manager-preview-target-id)
-    (save-excursion
-      (pcase-let ((`(,target-type ,target-id ,pane-id ,label)
-                   (or (tmux-cc--manager-find-target
-                        tmux-cc--manager-preview-target-type
-                        tmux-cc--manager-preview-target-id)
-                       '(nil nil nil nil))))
-        (let ((resolved-pane-id
-               (and target-type
-                    (tmux-cc--manager-target-pane-id target-type target-id pane-id))))
-          (if resolved-pane-id
-              (tmux-cc--manager-show-preview
-               target-type target-id resolved-pane-id label)
-            (tmux-cc-manager-hide-preview)))))))
-
-(defun tmux-cc--manager-refresh-preview ()
-  "Refresh the active tmux manager preview overlay contents."
-  (if (and (tmux-cc--manager-preview-live-p)
-           tmux-cc--manager-preview-pane-id)
-      (overlay-put tmux-cc--manager-preview-overlay
-                   'after-string
-                   (tmux-cc--manager-preview-string
-                    tmux-cc--manager-preview-pane-id
-                    tmux-cc--manager-preview-label))
-    (tmux-cc-manager-hide-preview)))
-
-(defun tmux-cc-manager-hide-preview ()
-  "Hide the tmux manager preview, if present."
-  (interactive)
+(defun tmux-cc--manager-clear-preview-state ()
+  "Clear the tmux manager preview state without rerendering."
   (tmux-cc--manager-preview-delete-overlay)
   (setq tmux-cc--manager-preview-target-type nil
         tmux-cc--manager-preview-target-id nil
         tmux-cc--manager-preview-label nil
         tmux-cc--manager-preview-pane-id nil))
+
+(defun tmux-cc--manager-rerender ()
+  "Rerender the manager buffer from the last fetched tmux data."
+  (when (and (buffer-live-p (get-buffer tmux-cc-manager-buffer-name))
+             tmux-cc--manager-last-sessions
+             tmux-cc--manager-last-windows
+             tmux-cc--manager-last-panes)
+    (with-current-buffer tmux-cc-manager-buffer-name
+      (let ((current-point (point)))
+        (tmux-cc--render-manager-buffer
+         tmux-cc--manager-last-sessions
+         tmux-cc--manager-last-windows
+         tmux-cc--manager-last-panes)
+        (goto-char (min current-point (point-max)))))))
+
+(defun tmux-cc--manager-refresh-preview ()
+  "Refresh the active tmux manager preview overlay contents."
+  (if (and (tmux-cc--manager-preview-live-p)
+           tmux-cc--manager-preview-pane-id)
+      (tmux-cc--manager-rerender)
+    (tmux-cc--manager-clear-preview-state)))
+
+(defun tmux-cc-manager-hide-preview ()
+  "Hide the tmux manager preview, if present."
+  (interactive)
+  (tmux-cc--manager-clear-preview-state)
+  (tmux-cc--manager-rerender))
 
 (defun tmux-cc-manager-toggle-preview ()
   "Preview the tmux target at point inline in the manager buffer."
@@ -1241,10 +1275,11 @@ When CALLBACK is non-nil, invoke it after the manager finishes rendering."
       (if (and (tmux-cc--manager-preview-live-p)
                (equal resolved-pane-id tmux-cc--manager-preview-pane-id))
           (tmux-cc-manager-hide-preview)
-        (tmux-cc--manager-show-preview
+        (tmux-cc--manager-set-preview
          target-type target-id resolved-pane-id
          (or (nth 3 (tmux-cc--manager-line-target))
-             target-id))))))
+             target-id))
+        (tmux-cc--manager-rerender)))))
 
 (defun tmux-cc-manager-help ()
   "Show available tmux manager commands."
@@ -1341,91 +1376,102 @@ When CALLBACK is non-nil, invoke it after the manager finishes rendering."
 
 (defun tmux-cc--render-manager-buffer (sessions windows panes)
   "Render tmux manager buffer using SESSIONS, WINDOWS, and PANES output."
+  (setq tmux-cc--manager-last-sessions sessions
+        tmux-cc--manager-last-windows windows
+        tmux-cc--manager-last-panes panes)
   (let ((buffer (get-buffer-create tmux-cc-manager-buffer-name)))
     (with-current-buffer buffer
       (tmux-cc-manager-mode)
       (let ((inhibit-read-only t))
         (tmux-cc--manager-preview-delete-overlay)
         (let* ((window-pane-map (tmux-cc--manager-window-pane-map panes))
-               (session-pane-map (tmux-cc--manager-session-pane-map
-                                  windows window-pane-map)))
-        (erase-buffer)
-        (insert (propertize "Tmux Control\n" 'face 'bold))
-        (insert (propertize
-                 "RET visit, TAB preview, g refresh, h help, k kill, n new-window, S new-session, c command, d detach\n"
-                 'face 'shadow))
-        (insert (propertize
-                 (format "Pane keys: %s next, %s previous, %s manager, %s kill, %s split-right, %s split-below, %s command\n\n"
-                         (or tmux-cc-focus-next-key "disabled")
-                         (or tmux-cc-focus-prev-key "disabled")
-                         (or tmux-cc-manager-key "disabled")
-                         (or tmux-cc-kill-pane-key "disabled")
-                         (or tmux-cc-split-horizontal-key "disabled")
-                         (or tmux-cc-split-vertical-key "disabled")
-                         (or tmux-cc-command-key "disabled"))
-                 'face 'shadow))
-        (insert (propertize "Sessions\n" 'face 'underline))
-        (dolist (line sessions)
-          (pcase-let ((`(,session-name ,session-id ,attached ,window-count)
-                       (split-string line "\t")))
-            (let ((start (point))
-                  (pane-id (gethash session-name session-pane-map)))
-              (insert (format "%s %-16s %-6s %2s windows attached:%s\n"
-                              (if (and attached (not (string= attached "0"))) "*" " ")
-                              session-name
-                              session-id
-                              window-count
-                              attached))
-              (add-text-properties
-               start (point)
-               (list 'tmux-target-type 'session
-                     'tmux-target-id session-name
-                     'tmux-pane-id pane-id
-                     'tmux-target-label session-name
-                     'mouse-face 'highlight
-                     'help-echo "RET: switch to tmux session")))))
-        (insert "\n")
-        (insert (propertize "Windows\n" 'face 'underline))
-        (dolist (line windows)
-          (pcase-let ((`(,session ,window-name ,window-id ,active ,layout ,pane-id)
-                       (split-string line "\t")))
-            (let ((start (point)))
-              (insert (format "%s %-16s %-16s %-4s %s\n"
-                              (if (string= active "1") "*" " ")
-                              session
-                              window-name
-                              window-id
-                              layout))
-              (add-text-properties
-               start (point)
-               (list 'tmux-target-type 'window
-                     'tmux-target-id window-id
-                     'tmux-pane-id (or (gethash window-id window-pane-map) pane-id)
-                     'tmux-target-label (format "%s:%s" session window-name)
-                     'mouse-face 'highlight
-                     'help-echo "RET: select tmux window")))))
-        (insert "\n")
-        (insert (propertize "Panes\n" 'face 'underline))
-        (dolist (line panes)
-          (pcase-let ((`(,session ,window-id ,pane-id ,active ,command ,size)
-                       (split-string line "\t")))
-            (let ((start (point)))
-              (insert (format "%s %-16s %-6s %-6s %-16s %s\n"
-                              (if (string= active "1") "*" " ")
-                              session
-                              window-id
-                              pane-id
-                              command
-                              size))
-              (add-text-properties
-               start (point)
-               (list 'tmux-target-type 'pane
-                     'tmux-target-id pane-id
-                     'tmux-target-label (format "%s/%s" window-id pane-id)
-                     'mouse-face 'highlight
-                     'help-echo "RET: select tmux pane")))))
-        (goto-char (point-min))
-        (tmux-cc--manager-restore-preview))))))
+               (session-pane-map
+                (tmux-cc--manager-session-pane-map windows window-pane-map)))
+          (erase-buffer)
+          (insert (propertize "Tmux Control\n" 'face 'bold))
+          (insert (propertize
+                   "RET visit, TAB preview, g refresh, h help, k kill, n new-window, S new-session, c command, d detach\n"
+                   'face 'shadow))
+          (insert (propertize
+                   (format "Pane keys: %s next, %s previous, %s manager, %s kill, %s split-right, %s split-below, %s command\n\n"
+                           (or tmux-cc-focus-next-key "disabled")
+                           (or tmux-cc-focus-prev-key "disabled")
+                           (or tmux-cc-manager-key "disabled")
+                           (or tmux-cc-kill-pane-key "disabled")
+                           (or tmux-cc-split-horizontal-key "disabled")
+                           (or tmux-cc-split-vertical-key "disabled")
+                           (or tmux-cc-command-key "disabled"))
+                   'face 'shadow))
+          (insert (propertize "Sessions\n" 'face 'underline))
+          (dolist (line sessions)
+            (pcase-let ((`(,session-name ,session-id ,attached ,window-count)
+                         (split-string line "\t")))
+              (let ((start (point))
+                    (pane-id (gethash session-name session-pane-map)))
+                (insert (format "%s %-16s %-6s %2s windows attached:%s\n"
+                                (if (and attached (not (string= attached "0"))) "*" " ")
+                                session-name
+                                session-id
+                                window-count
+                                attached))
+                (add-text-properties
+                 start (point)
+                 (list 'tmux-target-type 'session
+                       'tmux-target-id session-name
+                       'tmux-pane-id pane-id
+                       'tmux-target-label session-name
+                       'mouse-face 'highlight
+                       'help-echo "RET: switch to tmux session"))
+                (when (tmux-cc--manager-target-preview-active-p 'session session-name)
+                  (tmux-cc--manager-insert-preview-block pane-id session-name)))))
+          (insert "\n")
+          (insert (propertize "Windows\n" 'face 'underline))
+          (dolist (line windows)
+            (pcase-let ((`(,session ,window-name ,window-id ,active ,layout ,pane-id)
+                         (split-string line "\t")))
+              (let ((start (point))
+                    (resolved-pane-id (or (gethash window-id window-pane-map) pane-id))
+                    (label (format "%s:%s" session window-name)))
+                (insert (format "%s %-16s %-16s %-4s %s\n"
+                                (if (string= active "1") "*" " ")
+                                session
+                                window-name
+                                window-id
+                                layout))
+                (add-text-properties
+                 start (point)
+                 (list 'tmux-target-type 'window
+                       'tmux-target-id window-id
+                       'tmux-pane-id resolved-pane-id
+                       'tmux-target-label label
+                       'mouse-face 'highlight
+                       'help-echo "RET: select tmux window"))
+                (when (tmux-cc--manager-target-preview-active-p 'window window-id)
+                  (tmux-cc--manager-insert-preview-block resolved-pane-id label)))))
+          (insert "\n")
+          (insert (propertize "Panes\n" 'face 'underline))
+          (dolist (line panes)
+            (pcase-let ((`(,session ,window-id ,pane-id ,active ,command ,size)
+                         (split-string line "\t")))
+              (let ((start (point))
+                    (label (format "%s/%s" window-id pane-id)))
+                (insert (format "%s %-16s %-6s %-6s %-16s %s\n"
+                                (if (string= active "1") "*" " ")
+                                session
+                                window-id
+                                pane-id
+                                command
+                                size))
+                (add-text-properties
+                 start (point)
+                 (list 'tmux-target-type 'pane
+                       'tmux-target-id pane-id
+                       'tmux-target-label label
+                       'mouse-face 'highlight
+                       'help-echo "RET: select tmux pane"))
+                (when (tmux-cc--manager-target-preview-active-p 'pane pane-id)
+                  (tmux-cc--manager-insert-preview-block pane-id label)))))
+          (goto-char (point-min)))))))
 
 (defun tmux-cc-manager-visit ()
   "Visit the tmux target at point in the manager buffer."

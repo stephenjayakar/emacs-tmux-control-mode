@@ -66,8 +66,7 @@
   (ignore-errors
     (tmux-cc-manager-hide-preview))
   (ignore-errors
-    (when (process-live-p tmux-cc-process)
-      (delete-process tmux-cc-process)))
+    (tmux-cc-stop "tmux-cc e2e session stopped"))
   (tmux-cc-e2e--kill-test-sessions)
   (setq tmux-cc--cmd-queue nil
         tmux-cc--buffer ""
@@ -120,10 +119,10 @@
   (list :process-live (process-live-p tmux-cc-process)
         :selected-buffer (buffer-name (window-buffer (selected-window)))
         :pane-count (hash-table-count tmux-cc-panes)
-        :preview-active (and (overlayp tmux-cc--manager-preview-overlay) t)
+        :preview-active (and (tmux-cc--manager-preview-live-p) t)
         :preview-pane-id tmux-cc--manager-preview-pane-id
-        :preview-text (and (overlayp tmux-cc--manager-preview-overlay)
-                           (overlay-get tmux-cc--manager-preview-overlay 'after-string))))
+        :preview-text (and (tmux-cc--manager-preview-live-p)
+                           (tmux-cc--manager-preview-rendered-string))))
 
 (defun tmux-cc-e2e--manager-ready-p ()
   "Return non-nil when the tmux manager has rendered at least one target."
@@ -211,10 +210,10 @@
   (with-current-buffer tmux-cc-manager-buffer-name
     (tmux-cc-manager-toggle-preview))
   (tmux-cc-e2e--wait 5)
-  (tmux-cc-e2e--assert (overlayp tmux-cc--manager-preview-overlay)
+  (tmux-cc-e2e--assert (tmux-cc--manager-preview-live-p)
                         "Preview did not open for %s %s" target-type target-id)
   (list :pane-id tmux-cc--manager-preview-pane-id
-        :text (overlay-get tmux-cc--manager-preview-overlay 'after-string)))
+        :text (tmux-cc--manager-preview-rendered-string)))
 
 (defun tmux-cc-e2e-manager-visit-id (target-type target-id)
   "Visit TARGET-TYPE/TARGET-ID from the manager and return the selected buffer."
@@ -302,7 +301,7 @@
     (with-current-buffer tmux-cc-manager-buffer-name
       (tmux-cc-manager-toggle-preview))
     (tmux-cc-e2e--wait 5)
-    (tmux-cc-e2e--assert (not (overlayp tmux-cc--manager-preview-overlay))
+    (tmux-cc-e2e--assert (not (tmux-cc--manager-preview-live-p))
                           "Preview toggle did not close the active preview"))
   "ok-preview")
 
