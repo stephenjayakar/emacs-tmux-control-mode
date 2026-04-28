@@ -161,6 +161,13 @@ normally while inside a tmux pane."
 (defvar tmux-cc--in-cmd nil
   "Non-nil if currently receiving command output.")
 
+(defvar tmux-cc--line-mode-control-keys
+  '(("C-c C-c" . "\C-c")
+    ("C-c C-d" . "\C-d")
+    ("C-c C-z" . "\C-z")
+    ("C-c C-\\" . "\C-\\"))
+  "Line-mode term keys that should be sent to tmux panes as control bytes.")
+
 (defvar tmux-cc-pane-mode-map (make-sparse-keymap)
   "Keymap active in tmux pane buffers.")
 
@@ -756,6 +763,12 @@ and will print ']2;title' directly into the buffer."
         (set-process-sentinel proc 'term-sentinel)
         (process-put proc 'tmux-cc-pane-id pane-id)
         (term-mode)
+        (setq-local term-mode-map (copy-keymap term-mode-map))
+        (dolist (binding tmux-cc--line-mode-control-keys)
+          (define-key term-mode-map
+                      (kbd (car binding))
+                      (tmux-cc--control-key-command (cdr binding))))
+        (use-local-map term-mode-map)
         ;; Make a buffer-local copy of term-raw-map to unbind passthrough keys
         (setq-local term-raw-map (copy-keymap term-raw-map))
         (dolist (key tmux-cc-passthrough-keys)
@@ -763,6 +776,20 @@ and will print ']2;title' directly into the buffer."
         (term-char-mode)
         (tmux-cc-pane-mode 1)))
     buf))
+
+(defun tmux-cc--control-key-command (string)
+  "Return an interactive command that sends STRING to the tmux pane."
+  (lambda ()
+    (interactive)
+    (tmux-cc--send-current-pane-keys string)))
+
+(defun tmux-cc--send-current-pane-keys (string)
+  "Send STRING to the tmux pane associated with the current buffer."
+  (let* ((proc (get-buffer-process (current-buffer)))
+         (pane-id (and (processp proc) (process-get proc 'tmux-cc-pane-id))))
+    (if pane-id
+        (tmux-cc--send-keys pane-id string)
+      (user-error "Current buffer is not a tmux-cc pane"))))
 
 (defun tmux-cc--send-keys (pane-id string)
   "Send keystrokes to PANE-ID. STRING is a raw string of chars."
