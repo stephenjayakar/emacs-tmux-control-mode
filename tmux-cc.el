@@ -567,7 +567,8 @@ to the remote side, preventing early echoing of commands."
       (save-excursion
         (goto-char (point-max))
         (insert string))))
-  (setq tmux-cc--buffer (concat tmux-cc--buffer string))
+  (setq tmux-cc--buffer (tmux-cc--strip-control-mode-wrappers
+                         (concat tmux-cc--buffer string)))
   (let ((lines (split-string tmux-cc--buffer "\n" t)))
     ;; If the buffer doesn't end with a newline, the last element is incomplete.
     (if (not (string-suffix-p "\n" tmux-cc--buffer))
@@ -578,6 +579,16 @@ to the remote side, preventing early echoing of commands."
     (dolist (line lines)
       (let ((clean-line (string-trim-right line "\r")))
         (tmux-cc--handle-line clean-line)))))
+
+(defun tmux-cc--strip-control-mode-wrappers (string)
+  "Strip terminal DCS wrappers around tmux control-mode STRING.
+When tmux control mode is started under a terminal, tmux may wrap output in
+ESC P 1000 p ... ESC \\ so the terminal can pass it through.  The parser only
+understands the inner percent-prefixed control lines."
+  (let ((clean string))
+    (setq clean (replace-regexp-in-string "\eP1000p" "" clean t t))
+    (setq clean (replace-regexp-in-string "\e\\\\" "" clean t t))
+    clean))
 
 (defun tmux-cc--sentinel (_process event)
   "Sentinel for the tmux-cc PROCESS receiving EVENT."

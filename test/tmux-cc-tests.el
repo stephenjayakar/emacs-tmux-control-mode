@@ -60,6 +60,26 @@
      (tmux-cc--handle-line "%end 12 1 0")
      (should (equal result '("alpha" "beta"))))))
 
+(ert-deftest tmux-cc-filter-strips-control-mode-wrapper ()
+  (tmux-cc-test--with-clean-state
+   (let ((process (make-process
+                   :name "tmux-cc-test-control"
+                   :buffer (generate-new-buffer "*tmux-cc-test-control*")
+                   :command '("sleep" "1000000")))
+         result)
+     (unwind-protect
+         (progn
+           (setq tmux-cc--cmd-queue
+                 (list (lambda (lines)
+                         (setq result lines))))
+           (tmux-cc--filter process "\eP1000p%begin 12 1 0\r\nalpha\r\n%end 12 1 0\r\n\e\\")
+           (should (equal result '("alpha")))
+           (should (equal tmux-cc--buffer "")))
+       (when (process-live-p process)
+         (delete-process process))
+       (when (buffer-live-p (process-buffer process))
+         (kill-buffer (process-buffer process)))))))
+
 (ert-deftest tmux-cc-output-reaches-pane-buffer ()
   (tmux-cc-test--with-clean-state
    (tmux-cc--handle-output "%9" "hello\\040world")
