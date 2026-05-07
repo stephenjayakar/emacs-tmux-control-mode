@@ -3,37 +3,37 @@
 ;; Author: Stephen Jayakar <stephenjayakar@gmail.com>
 ;; Maintainer: Stephen Jayakar <stephenjayakar@gmail.com>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "29.1") (eat "0.9.4"))
 ;; Keywords: terminals, tmux, tools
 ;; URL: https://github.com/stephenjayakar/emacs-tmux-control-mode
 
 ;;; Commentary:
 
 ;; tmux-cc.el integrates tmux control mode (`tmux -CC`) with Emacs. It
-;; creates a term buffer per tmux pane, mirrors tmux layout changes into Emacs
+;; creates a terminal buffer per tmux pane, mirrors tmux layout changes into Emacs
 ;; windows, and exposes commands for splitting panes, switching windows and
 ;; sessions, and sending arbitrary tmux commands.
 
 ;;; Code:
 
 (require 'subr-x)
-(require 'term)
 (require 'windmove)
+(require 'eat)
 
 (defgroup tmux-cc nil
   "tmux control mode integration."
-  :group 'term)
+  :group 'tools)
 
 (defcustom tmux-cc-passthrough-keys
   '("C-x" "M-x" "C-t" "C-<tab>" "C-S-<tab>" "C-M-S-<tab>" "s-]" "s-{" "s-t" "s-w" "C-\\")
-  "List of key sequences that should bypass term-char-mode interception.
+  "List of key sequences that should bypass Eat character-mode interception.
 This allows global Emacs window management and command keys to function
 normally while inside a tmux pane."
   :type '(repeat string)
   :group 'tmux-cc)
 
 (defcustom tmux-cc-strip-problematic-escape-sequences t
-  "When non-nil, strip terminal mode sequences that `term.el` displays visibly."
+  "When non-nil, strip terminal mode sequences that Eat displays visibly."
   :type 'boolean
   :group 'tmux-cc)
 
@@ -166,7 +166,7 @@ normally while inside a tmux pane."
     ("C-c C-d" . "\C-d")
     ("C-c C-z" . "\C-z")
     ("C-c C-\\" . "\C-\\"))
-  "Line-mode term keys that should be sent to tmux panes as control bytes.")
+  "Line-mode keys that should be sent to tmux panes as control bytes.")
 
 (defvar tmux-cc-pane-mode-map (make-sparse-keymap)
   "Keymap active in tmux pane buffers.")
@@ -215,6 +215,9 @@ normally while inside a tmux pane."
 
 (defvar tmux-cc--startup-refresh-timer nil
   "Fallback timer for the initial tmux-cc manager refresh.")
+
+(defvar-local tmux-cc--pane-id nil
+  "Tmux pane id associated with the current buffer.")
 
 (defvar tmux-cc-manager-mode-map
   (let ((map (make-sparse-keymap)))
@@ -678,15 +681,15 @@ understands the inner percent-prefixed control lines."
 
 (defun tmux-cc--strip-osc (str)
   "Strip OSC (Operating System Command) escape sequences from STR.
-Emacs term.el does not handle sequences like \\e]2;title\\a properly
-and will print ']2;title' directly into the buffer."
+Eat handles many OSC sequences, but tmux-cc strips titles here so pane output
+remains focused on shell contents."
   (replace-regexp-in-string
    (rx "\e]" (* (not (any "\a" "\e"))) (or "\a" "\e\\"))
    ""
    str t t))
 
 (defun tmux-cc--strip-problematic-escapes (str)
-  "Strip terminal escape sequences from STR that `term.el` misrenders."
+  "Strip terminal escape sequences from STR that should not be shown in panes."
   (let ((clean str))
     (setq clean (replace-regexp-in-string "\e[=>]" "" clean t t))
     (setq clean (replace-regexp-in-string "\ek[^\e]*\e\\\\" "" clean t t))
@@ -707,9 +710,7 @@ and will print ']2;title' directly into the buffer."
                  (append (gethash pane-id tmux-cc--pane-history-pending-output)
                          (list clean))
                  tmux-cc--pane-history-pending-output)
-      (let ((proc (get-buffer-process buf)))
-        (when proc
-          (term-emulate-terminal proc clean)))))
+      (tmux-cc--pane-process-output buf clean)))
   (when (equal pane-id tmux-cc--manager-preview-pane-id)
     (tmux-cc--manager-refresh-preview)))
 
@@ -718,13 +719,10 @@ and will print ']2;title' directly into the buffer."
   (let ((buffer (gethash pane-id tmux-cc-panes))
         (history (string-join lines "\r\n")))
     (when (buffer-live-p buffer)
-      (let ((proc (get-buffer-process buffer)))
-        (when proc
-          (when (not (string-empty-p history))
-            ;; Replay history through term emulation so colors/cursor state match.
-            (term-emulate-terminal proc (concat history "\r\n")))
-          (dolist (chunk (gethash pane-id tmux-cc--pane-history-pending-output))
-            (term-emulate-terminal proc chunk)))))
+      (when (not (string-empty-p history))
+        (tmux-cc--pane-process-output buffer (concat history "\r\n")))
+      (dolist (chunk (gethash pane-id tmux-cc--pane-history-pending-output))
+        (tmux-cc--pane-process-output buffer chunk)))
     (puthash pane-id 'loaded tmux-cc--pane-history-state)
     (remhash pane-id tmux-cc--pane-history-pending-output)
     (when (equal pane-id tmux-cc--manager-preview-pane-id)
@@ -759,33 +757,52 @@ and will print ']2;title' directly into the buffer."
       (delete-other-windows)
       (tmux-cc-apply-layout node (selected-window)))))
 
+(defun tmux-cc--eat-input (terminal input)
+  "Route Eat TERMINAL INPUT to the associated tmux pane."
+  (let ((pane-id (eat-term-parameter terminal 'tmux-cc-pane-id)))
+    (when pane-id
+      (tmux-cc--send-keys pane-id input))))
+
+(defun tmux-cc--copy-keymap-with-unbound-keys (keymap keys)
+  "Return a copy of KEYMAP with each key sequence in KEYS unbound."
+  (let ((copy (copy-keymap keymap)))
+    (dolist (key keys)
+      (define-key copy (kbd key) nil))
+    copy))
+
+(defun tmux-cc--setup-eat-pane (pane-id)
+  "Set up the current buffer as an Eat terminal for tmux PANE-ID."
+  (eat-mode)
+  (setq-local tmux-cc--pane-id pane-id
+              eat-terminal (eat-term-make (current-buffer) (point-min)))
+  (eat-term-set-parameter eat-terminal 'input-function #'tmux-cc--eat-input)
+  (eat-term-set-parameter eat-terminal 'tmux-cc-pane-id pane-id)
+  (setq-local minor-mode-overriding-map-alist
+              (cons (cons 'eat--char-mode
+                          (tmux-cc--copy-keymap-with-unbound-keys
+                           eat-char-mode-map tmux-cc-passthrough-keys))
+                    minor-mode-overriding-map-alist))
+  (eat-char-mode)
+  (tmux-cc-pane-mode 1))
+
+(defun tmux-cc--pane-process-output (buffer string)
+  "Process Eat terminal output STRING into tmux pane BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when eat-terminal
+        (let ((inhibit-read-only t)
+              (inhibit-modification-hooks t)
+              (buffer-undo-list t))
+          (eat-term-process-output eat-terminal string)
+          (eat-term-redisplay eat-terminal))))))
+
 (defun tmux-cc-create-pane (pane-id)
-  "Create a term buffer for tmux PANE-ID."
+  "Create a terminal buffer for tmux PANE-ID."
   (let* ((buf-name (format "%s%s" tmux-cc-pane-buffer-prefix pane-id))
          (buf (generate-new-buffer buf-name)))
     (puthash pane-id buf tmux-cc-panes)
     (with-current-buffer buf
-      (let ((proc (make-process
-                   :name (format "tmux-pane-%s" pane-id)
-                   :buffer buf
-                   :command '("sleep" "1000000")
-                   :connection-type 'pty)))
-        (set-process-filter proc 'term-emulate-terminal)
-        (set-process-sentinel proc 'term-sentinel)
-        (process-put proc 'tmux-cc-pane-id pane-id)
-        (term-mode)
-        (setq-local term-mode-map (copy-keymap term-mode-map))
-        (dolist (binding tmux-cc--line-mode-control-keys)
-          (define-key term-mode-map
-                      (kbd (car binding))
-                      (tmux-cc--control-key-command (cdr binding))))
-        (use-local-map term-mode-map)
-        ;; Make a buffer-local copy of term-raw-map to unbind passthrough keys
-        (setq-local term-raw-map (copy-keymap term-raw-map))
-        (dolist (key tmux-cc-passthrough-keys)
-          (define-key term-raw-map (kbd key) nil))
-        (term-char-mode)
-        (tmux-cc-pane-mode 1)))
+      (tmux-cc--setup-eat-pane pane-id))
     buf))
 
 (defun tmux-cc--control-key-command (string)
@@ -796,8 +813,7 @@ and will print ']2;title' directly into the buffer."
 
 (defun tmux-cc--send-current-pane-keys (string)
   "Send STRING to the tmux pane associated with the current buffer."
-  (let* ((proc (get-buffer-process (current-buffer)))
-         (pane-id (and (processp proc) (process-get proc 'tmux-cc-pane-id))))
+  (let ((pane-id tmux-cc--pane-id))
     (if pane-id
         (tmux-cc--send-keys pane-id string)
       (user-error "Current buffer is not a tmux-cc pane"))))
@@ -811,19 +827,9 @@ and will print ']2;title' directly into the buffer."
        tmux-cc-process
        (format "send-keys -t %s -H %s\n" pane-id hex-args)))))
 
-(defun tmux-cc--intercept-process-send-string (orig-fun proc string &rest args)
-  "Intercept input to tmux-cc dummy processes and route to tmux-cc."
-  (if (and (processp proc)
-           (process-get proc 'tmux-cc-pane-id)
-           (bound-and-true-p tmux-cc-process)
-           (process-live-p tmux-cc-process))
-      (let* ((pane-id (process-get proc 'tmux-cc-pane-id)))
-        (tmux-cc--send-keys pane-id string))
-    (apply orig-fun proc string args)))
+;;; --- Compatibility Cleanup For Old Advice ---
 
-(advice-add 'process-send-string :around #'tmux-cc--intercept-process-send-string)
-
-;;; --- Compatibility Cleanup For Old Window Advice ---
+(advice-remove 'process-send-string 'tmux-cc--intercept-process-send-string)
 
 (defun tmux-cc--intercept-split-window-right (orig-fun &rest args)
   "Compatibility shim retained so reloading removes older split advice."
@@ -860,9 +866,7 @@ and will print ']2;title' directly into the buffer."
 
 (defun tmux-cc--current-pane-id ()
   "Return the pane id associated with the current buffer, or nil."
-  (let ((proc (get-buffer-process (current-buffer))))
-    (and (processp proc)
-         (process-get proc 'tmux-cc-pane-id))))
+  tmux-cc--pane-id)
 
 (defun tmux-cc--current-pane-id-required ()
   "Return the current tmux pane id, signaling a user error when missing."

@@ -6,6 +6,9 @@
 
 ## Install
 
+Install [Eat](https://elpa.nongnu.org/nongnu/eat.html) first; tmux pane
+buffers are rendered with Eat.
+
 ### As a package checkout
 
 Add the repo to `load-path` and require `tmux-cc`:
