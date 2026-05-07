@@ -3,6 +3,7 @@
 ![screenshot](./screenshot.png)
 
 `tmux-cc.el` integrates [tmux control mode](https://github.com/tmux/tmux/wiki/Control-Mode) (`tmux -CC`) with Emacs.
+Pane buffers are rendered with [vterm](https://github.com/akermu/emacs-libvterm), so `vterm` must be installed and loadable before pane buffers are created.
 
 ## Install
 
@@ -11,6 +12,8 @@
 Add the repo to `load-path` and require `tmux-cc`:
 
 ```elisp
+(use-package vterm :ensure t)
+
 (add-to-list 'load-path "/path/to/emacs-tmux-control-mode")
 (require 'tmux-cc)
 ```

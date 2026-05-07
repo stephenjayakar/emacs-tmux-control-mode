@@ -4,6 +4,8 @@
 (require 'ert)
 (require 'tmux-cc)
 
+(defvar vterm-mode-map)
+
 (ert-deftest tmux-cc-parse-layout-string-test ()
   (let ((node (tmux-cc-parse-layout-string "b25f,80x24,0,0{40x24,0,0,1,39x24,41,0,2}")))
     (should (equal (car node) 'horizontal))
@@ -99,6 +101,49 @@
   (should (equal (tmux-cc--manager-target-pane-id 'window "@1" "%1") "%1"))
   (should (equal (tmux-cc--manager-target-pane-id 'session "main" "%3") "%3")))
 
+(ert-deftest tmux-cc-create-pane-uses-vterm-mode-test ()
+  (let ((tmux-cc-panes (make-hash-table :test 'equal))
+        (old-vterm-mode-map (and (boundp 'vterm-mode-map) vterm-mode-map))
+        (had-vterm-mode-map (boundp 'vterm-mode-map))
+        captured)
+    (unwind-protect
+        (progn
+          (setq vterm-mode-map (make-sparse-keymap))
+          (define-key vterm-mode-map (kbd "C-\\") #'ignore)
+          (cl-letf* ((original-require (symbol-function 'require))
+                     ((symbol-function 'require)
+                      (lambda (feature &optional filename noerror)
+                        (if (eq feature 'vterm)
+                            t
+                          (funcall original-require feature filename noerror))))
+                     ((symbol-function 'vterm-mode)
+                      (lambda ()
+                        (make-process
+                         :name "tmux-cc-vterm-test"
+                         :buffer (current-buffer)
+                         :command '("sleep" "10")
+                         :connection-type 'pipe)))
+                     ((symbol-function 'tmux-cc--send-keys)
+                      (lambda (pane-id string)
+                        (push (list pane-id string) captured))))
+            (let ((buffer (tmux-cc-create-pane "%42")))
+              (unwind-protect
+                  (with-current-buffer buffer
+                    (let ((proc (get-buffer-process buffer)))
+                      (should (processp proc))
+                      (should (equal (process-get proc 'tmux-cc-pane-id) "%42"))
+                      (should (eq (process-filter proc) #'tmux-cc--pane-emulate-terminal))
+                      (should (eq (lookup-key (current-local-map) (kbd "C-\\")) nil))
+                      (call-interactively (key-binding (kbd "C-c C-d")))
+                      (should (equal captured '(("%42" "\C-d"))))))
+                (when (buffer-live-p buffer)
+                  (when-let ((proc (get-buffer-process buffer)))
+                    (delete-process proc))
+                  (kill-buffer buffer))))))
+      (if had-vterm-mode-map
+          (setq vterm-mode-map old-vterm-mode-map)
+        (makunbound 'vterm-mode-map)))))
+
 (ert-deftest tmux-cc-manager-inline-preview-toggle-test ()
   (let* ((tmux-cc-panes (make-hash-table :test 'equal))
          (preview-buffer (get-buffer-create "*tmux-cc-preview*"))
@@ -174,7 +219,7 @@
                            :connection-type 'pipe)))
     (puthash "%1" preview-buffer tmux-cc-panes)
     (unwind-protect
-        (cl-letf (((symbol-function 'term-emulate-terminal)
+        (cl-letf (((symbol-function 'tmux-cc--pane-emulate-terminal)
                    (lambda (proc string)
                      (with-current-buffer (process-buffer proc)
                        (goto-char (point-max))
@@ -239,7 +284,7 @@
                      :command '("sleep" "10")
                      :connection-type 'pipe)))
           (puthash "%1" '("new output") tmux-cc--pane-history-pending-output)
-          (cl-letf (((symbol-function 'term-emulate-terminal)
+          (cl-letf (((symbol-function 'tmux-cc--pane-emulate-terminal)
                      (lambda (target-proc text)
                        (with-current-buffer (process-buffer target-proc)
                          (goto-char (point-max))
@@ -270,7 +315,7 @@
     (unwind-protect
         (cl-letf (((symbol-function 'process-live-p)
                    (lambda (_process) t))
-                  ((symbol-function 'term-emulate-terminal)
+                  ((symbol-function 'tmux-cc--pane-emulate-terminal)
                    (lambda (target-proc text)
                      (with-current-buffer (process-buffer target-proc)
                        (goto-char (point-max))
@@ -303,9 +348,9 @@
     (puthash "%2" buffer tmux-cc-panes)
     (puthash "%2" 'pending tmux-cc--pane-history-state)
     (unwind-protect
-        (cl-letf (((symbol-function 'term-emulate-terminal)
+        (cl-letf (((symbol-function 'tmux-cc--pane-emulate-terminal)
                    (lambda (&rest _)
-                     (error "term-emulate-terminal should not run while history pending"))))
+                     (error "tmux pane renderer should not run while history pending"))))
           (tmux-cc--handle-output "%2" "hello\\012world")
           (should (equal (gethash "%2" tmux-cc--pane-history-pending-output)
                          '("hello\nworld"))))

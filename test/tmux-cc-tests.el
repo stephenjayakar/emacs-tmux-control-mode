@@ -82,40 +82,79 @@
 
 (ert-deftest tmux-cc-output-reaches-pane-buffer ()
   (tmux-cc-test--with-clean-state
-   (tmux-cc--handle-output "%9" "hello\\040world")
-   (with-current-buffer (tmux-cc--pane-buffer "%9")
-     (should (string-match-p "hello world"
-                             (buffer-substring-no-properties (point-min) (point-max)))))))
+   (let* ((buffer (get-buffer-create "*tmux-cc-test-pane*"))
+          (proc (make-process
+                 :name "tmux-cc-test-pane"
+                 :buffer buffer
+                 :command '("sleep" "10")
+                 :connection-type 'pipe)))
+     (puthash "%9" buffer tmux-cc-panes)
+     (unwind-protect
+         (cl-letf (((symbol-function 'tmux-cc--pane-emulate-terminal)
+                    (lambda (target-proc string)
+                      (with-current-buffer (process-buffer target-proc)
+                        (goto-char (point-max))
+                        (insert string)))))
+           (tmux-cc--handle-output "%9" "hello\\040world")
+           (with-current-buffer buffer
+             (should (string-match-p "hello world"
+                                     (buffer-substring-no-properties
+                                      (point-min) (point-max))))))
+       (when (process-live-p proc)
+         (delete-process proc))
+       (when (buffer-live-p buffer)
+         (kill-buffer buffer))))))
 
 (ert-deftest tmux-cc-input-is-routed-back-to-tmux ()
   (tmux-cc-test--with-clean-state
-   (let* ((buffer (tmux-cc--pane-buffer "%5"))
-          (proc (get-buffer-process buffer))
+   (let* ((buffer (get-buffer-create "*tmux-cc-test-pane*"))
+          (proc (make-process
+                 :name "tmux-cc-test-pane"
+                 :buffer buffer
+                 :command '("sleep" "10")
+                 :connection-type 'pipe))
           (tmux-cc-process (make-process
                             :name "tmux-cc-test"
                             :buffer nil
                             :command '("sleep" "1000000")))
           captured)
+     (process-put proc 'tmux-cc-pane-id "%5")
+     (cl-letf (((symbol-function 'tmux-cc--send-keys)
+                (lambda (pane-id string)
+                  (push (list pane-id string) captured))))
+       (unwind-protect
+           (progn
+             (process-send-string proc "xyz")
+             (process-send-string proc "\n"))
+         (when (process-live-p proc)
+           (delete-process proc))
+         (delete-process tmux-cc-process)))
+     (should (equal (nreverse captured) '(("%5" "xyz") ("%5" "\n")))))))
+
+(ert-deftest tmux-cc-control-keys-route-to-tmux ()
+  (tmux-cc-test--with-clean-state
+   (let ((buffer (get-buffer-create "*tmux-cc-test-pane*"))
+         (proc (make-process
+                :name "tmux-cc-test-pane"
+                :buffer nil
+                :command '("sleep" "10")
+                :connection-type 'pipe))
+         captured)
+     (with-current-buffer buffer
+       (set-process-buffer proc buffer))
+     (process-put proc 'tmux-cc-pane-id "%5")
      (cl-letf (((symbol-function 'tmux-cc--send-keys)
                 (lambda (pane-id string)
                   (push (list pane-id string) captured))))
        (unwind-protect
            (with-current-buffer buffer
-             (funcall term-input-sender proc "xyz"))
-         (delete-process tmux-cc-process)))
-     (should (equal (nreverse captured) '(("%5" "xyz") ("%5" "\n")))))))
-
-(ert-deftest tmux-cc-line-mode-control-keys-route-to-tmux ()
-  (tmux-cc-test--with-clean-state
-   (let ((buffer (tmux-cc--pane-buffer "%5"))
-         captured)
-     (cl-letf (((symbol-function 'tmux-cc--send-keys)
-                (lambda (pane-id string)
-                  (push (list pane-id string) captured))))
-       (with-current-buffer buffer
-         (term-line-mode)
-         (dolist (key '("C-c C-c" "C-c C-d" "C-c C-z" "C-c C-\\"))
-           (call-interactively (key-binding (kbd key))))))
+             (dolist (binding tmux-cc--control-keys)
+               (call-interactively
+                (tmux-cc--control-key-command (cdr binding)))))
+         (when (process-live-p proc)
+           (delete-process proc))
+         (when (buffer-live-p buffer)
+           (kill-buffer buffer))))
      (should (equal (nreverse captured)
                     '(("%5" "\C-c")
                       ("%5" "\C-d")
@@ -128,7 +167,8 @@
      (unwind-protect
          (progn
            (global-set-key (kbd "C-\\") #'other-window)
-           (with-current-buffer (tmux-cc--pane-buffer "%7")
+           (with-temp-buffer
+             (tmux-cc-pane-mode 1)
              (should (eq (key-binding (kbd "C-\\")) #'other-window))))
        (global-set-key (kbd "C-\\") original)))))
 
