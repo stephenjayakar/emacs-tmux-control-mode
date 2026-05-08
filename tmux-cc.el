@@ -175,6 +175,12 @@ intercepts input before it reaches this process."
 (defvar tmux-cc--in-cmd nil
   "Non-nil if currently receiving command output.")
 
+(defvar-local tmux-cc--pane-pending-output nil
+  "Terminal output queued while a tmux pane is in `vterm-copy-mode'.")
+
+(defvar-local tmux-cc--pane-local-map nil
+  "Pane-local vterm keymap restored after leaving `vterm-copy-mode'.")
+
 (defvar tmux-cc--control-keys
   '(("C-c C-c" . "\C-c")
     ("C-c C-d" . "\C-d")
@@ -717,12 +723,58 @@ or clipboard sequences before they reach the pane renderer."
   "Feed terminal output STRING for PROC into the pane's vterm emulator."
   (vterm--filter proc string))
 
+(defun tmux-cc--pane-copy-mode-active-p (buffer)
+  "Return non-nil when BUFFER is a tmux pane in `vterm-copy-mode'."
+  (and (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (and (bound-and-true-p tmux-cc-pane-mode)
+              (bound-and-true-p vterm-copy-mode)))))
+
+(defun tmux-cc--pane-accept-output (proc string)
+  "Queue or render terminal output STRING for pane PROC.
+Return non-nil when STRING was rendered immediately."
+  (let ((buffer (and (processp proc) (process-buffer proc))))
+    (if (tmux-cc--pane-copy-mode-active-p buffer)
+        (with-current-buffer buffer
+          (setq tmux-cc--pane-pending-output
+                (nconc tmux-cc--pane-pending-output (list string)))
+          nil)
+      (tmux-cc--pane-emulate-terminal proc string)
+      t)))
+
+(defun tmux-cc--pane-flush-pending-output (&optional buffer)
+  "Replay queued pane output for BUFFER after leaving `vterm-copy-mode'."
+  (let ((target (or buffer (current-buffer))))
+    (when (buffer-live-p target)
+      (with-current-buffer target
+        (unless (bound-and-true-p vterm-copy-mode)
+          (let ((chunks tmux-cc--pane-pending-output)
+                (proc (get-buffer-process target)))
+            (setq tmux-cc--pane-pending-output nil)
+            (when proc
+              (dolist (chunk chunks)
+                (tmux-cc--pane-emulate-terminal proc chunk))
+              (when-let ((pane-id (process-get proc 'tmux-cc-pane-id)))
+                (when (equal pane-id tmux-cc--manager-preview-pane-id)
+                  (tmux-cc--manager-refresh-preview))))))))))
+
+(defun tmux-cc--after-vterm-copy-mode (&rest _)
+  "Maintain tmux pane state after `vterm-copy-mode' toggles."
+  (when (bound-and-true-p tmux-cc-pane-mode)
+    (unless (bound-and-true-p vterm-copy-mode)
+      (when tmux-cc--pane-local-map
+        (use-local-map tmux-cc--pane-local-map))
+      (tmux-cc--pane-flush-pending-output (current-buffer)))))
+
+(advice-add 'vterm-copy-mode :after #'tmux-cc--after-vterm-copy-mode)
+
 (defun tmux-cc--handle-output (pane-id str)
   "Handle output STR for PANE-ID."
   (let* ((decoded (tmux-cc--decode-octal str))
          (clean (if tmux-cc-strip-problematic-escape-sequences
                     (tmux-cc--strip-problematic-escapes decoded)
                   decoded))
+         rendered
          (buf (gethash pane-id tmux-cc-panes)))
     (unless (buffer-live-p buf)
       (setq buf (tmux-cc-create-pane pane-id)))
@@ -733,9 +785,10 @@ or clipboard sequences before they reach the pane renderer."
                  tmux-cc--pane-history-pending-output)
       (let ((proc (get-buffer-process buf)))
         (when proc
-          (tmux-cc--pane-emulate-terminal proc clean)))))
-  (when (equal pane-id tmux-cc--manager-preview-pane-id)
-    (tmux-cc--manager-refresh-preview)))
+          (setq rendered (tmux-cc--pane-accept-output proc clean)))))
+    (when (and rendered
+               (equal pane-id tmux-cc--manager-preview-pane-id))
+      (tmux-cc--manager-refresh-preview))))
 
 (defun tmux-cc--apply-pane-history (pane-id lines)
   "Apply captured history LINES and queued output into pane buffer for PANE-ID."
@@ -746,9 +799,9 @@ or clipboard sequences before they reach the pane renderer."
         (when proc
           (when (not (string-empty-p history))
             ;; Replay history through vterm so colors/cursor state match.
-            (tmux-cc--pane-emulate-terminal proc (concat history "\r\n")))
+            (tmux-cc--pane-accept-output proc (concat history "\r\n")))
           (dolist (chunk (gethash pane-id tmux-cc--pane-history-pending-output))
-            (tmux-cc--pane-emulate-terminal proc chunk)))))
+            (tmux-cc--pane-accept-output proc chunk)))))
     (puthash pane-id 'loaded tmux-cc--pane-history-state)
     (remhash pane-id tmux-cc--pane-history-pending-output)
     (when (equal pane-id tmux-cc--manager-preview-pane-id)
@@ -811,7 +864,8 @@ or clipboard sequences before they reach the pane renderer."
         (set-process-query-on-exit-flag proc nil)
         (set-process-filter proc #'tmux-cc--pane-emulate-terminal)
         (process-put proc 'tmux-cc-pane-id pane-id)
-        (use-local-map (tmux-cc--pane-local-map))
+        (setq-local tmux-cc--pane-local-map (tmux-cc--pane-local-map))
+        (use-local-map tmux-cc--pane-local-map)
         (tmux-cc-pane-mode 1)))
     buf))
 

@@ -4,7 +4,10 @@
 (require 'ert)
 (require 'tmux-cc)
 
+(defvar vterm-copy-mode)
 (defvar vterm-mode-map)
+(defvar tmux-cc--pane-pending-output)
+(defvar tmux-cc--pane-local-map)
 
 (ert-deftest tmux-cc-parse-layout-string-test ()
   (let ((node (tmux-cc-parse-layout-string "b25f,80x24,0,0{40x24,0,0,1,39x24,41,0,2}")))
@@ -143,6 +146,54 @@
       (if had-vterm-mode-map
           (setq vterm-mode-map old-vterm-mode-map)
         (makunbound 'vterm-mode-map)))))
+
+(ert-deftest tmux-cc-pane-output-pauses-during-vterm-copy-mode-test ()
+  (let* ((buffer (get-buffer-create "*tmux-cc-copy-mode*"))
+         (proc (make-process
+                :name "tmux-cc-copy-mode"
+                :buffer buffer
+                :command '("sleep" "10")
+                :connection-type 'pipe)))
+    (unwind-protect
+        (progn
+          (process-put proc 'tmux-cc-pane-id "%1")
+          (with-current-buffer buffer
+            (tmux-cc-pane-mode 1)
+            (setq-local vterm-copy-mode t))
+          (cl-letf (((symbol-function 'tmux-cc--pane-emulate-terminal)
+                     (lambda (&rest _)
+                       (error "pane output should be queued in copy mode"))))
+            (should-not (tmux-cc--pane-accept-output proc "queued")))
+          (with-current-buffer buffer
+            (should (equal tmux-cc--pane-pending-output '("queued")))
+            (setq-local vterm-copy-mode nil))
+          (cl-letf (((symbol-function 'tmux-cc--pane-emulate-terminal)
+                     (lambda (target-proc string)
+                       (with-current-buffer (process-buffer target-proc)
+                         (goto-char (point-max))
+                         (insert string)))))
+            (tmux-cc--pane-flush-pending-output buffer))
+          (with-current-buffer buffer
+            (should-not tmux-cc--pane-pending-output)
+            (should (equal (buffer-string) "queued"))))
+      (when (process-live-p proc)
+        (delete-process proc))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest tmux-cc-vterm-copy-mode-exit-restores-pane-map-test ()
+  (let ((buffer (get-buffer-create "*tmux-cc-copy-map*"))
+        (pane-map (make-sparse-keymap)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (tmux-cc-pane-mode 1)
+          (setq-local tmux-cc--pane-local-map pane-map)
+          (setq-local vterm-copy-mode nil)
+          (use-local-map nil)
+          (tmux-cc--after-vterm-copy-mode)
+          (should (eq (current-local-map) pane-map)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest tmux-cc-manager-inline-preview-toggle-test ()
   (let* ((tmux-cc-panes (make-hash-table :test 'equal))
