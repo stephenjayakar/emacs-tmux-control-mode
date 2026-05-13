@@ -334,23 +334,51 @@ When DELAY is non-nil, wait DELAY seconds before rechecking."
            (setq tmux-cc--deferred-bootstrap-timer nil)
            (when (process-live-p tmux-cc-process)
              (if (or tmux-cc--in-cmd tmux-cc--cmd-queue)
-               (tmux-cc--schedule-bootstrap-current-layout 0.05)
+                 (tmux-cc--schedule-bootstrap-current-layout 0.05)
                (tmux-cc--bootstrap-current-layout)))))))
+
+(defun tmux-cc--visible-pane-windows (&optional frame)
+  "Return live windows in FRAME that display tmux pane buffers."
+  (let (windows)
+    (dolist (window (window-list frame 'no-minibuf))
+      (when (tmux-cc--pane-id-for-window window)
+        (push window windows)))
+    (nreverse windows)))
+
+(defun tmux-cc--window-bounds-size (windows)
+  "Return the bounding WxH size for WINDOWS."
+  (when windows
+    (let ((left most-positive-fixnum)
+          (top most-positive-fixnum)
+          (right 0)
+          (bottom 0))
+      (dolist (window windows)
+        (pcase-let ((`(,w-left ,w-top ,w-right ,w-bottom)
+                     (window-edges window)))
+          (setq left (min left w-left)
+                top (min top w-top)
+                right (max right w-right)
+                bottom (max bottom w-bottom))))
+      (let ((width (- right left))
+            (height (- bottom top)))
+        (when (and (> width 0) (> height 0))
+          (format "%dx%d" width height))))))
 
 (defun tmux-cc--current-client-size (&optional frame)
   "Return the control-mode client size for FRAME as a tmux WxH string."
-  (let* ((root (frame-root-window (or frame (selected-frame))))
-         (width (if (window-live-p root)
-                    (window-body-width root)
-                  (window-total-width root)))
-         (height (if (window-live-p root)
-                     (window-body-height root)
-                   (window-total-height root))))
-    (when (and (integerp width)
-               (integerp height)
-               (> width 0)
-               (> height 0))
-      (format "%dx%d" width height))))
+  (or (tmux-cc--window-bounds-size (tmux-cc--visible-pane-windows frame))
+      (let* ((root (frame-root-window (or frame (selected-frame))))
+             (width (if (window-live-p root)
+                        (window-body-width root)
+                      (window-total-width root)))
+             (height (if (window-live-p root)
+                         (window-body-height root)
+                       (window-total-height root))))
+        (when (and (integerp width)
+                   (integerp height)
+                   (> width 0)
+                   (> height 0))
+          (format "%dx%d" width height)))))
 
 (defun tmux-cc--sync-client-size (&optional frame force)
   "Send the current Emacs terminal size for FRAME to tmux.
@@ -378,6 +406,12 @@ When FORCE is non-nil, send the size even if it matches the last sync."
 (defun tmux-cc--window-size-change (&optional frame)
   "React to Emacs window size changes in FRAME."
   (tmux-cc--schedule-client-size-sync frame))
+
+(defun tmux-cc--prepare-pane-window (window)
+  "Make WINDOW's text area match terminal cell geometry."
+  (when (window-live-p window)
+    (set-window-fringes window 0 0)
+    (set-window-margins window 0 0)))
 
 (defun tmux-cc--render-manager-closed (&optional reason)
   "Render the tmux manager in a disconnected state with optional REASON."
@@ -570,7 +604,8 @@ Returns ((TYPE WIDTH HEIGHT X Y PANE-ID CHILDREN) . NEXT-POS)."
              (buf (gethash pane-id-str tmux-cc-panes)))
         (unless (buffer-live-p buf)
           (setq buf (tmux-cc-create-pane pane-id-str)))
-        (set-window-buffer root-window buf)))
+        (set-window-buffer root-window buf)
+        (tmux-cc--prepare-pane-window root-window)))
 
      ((eq type 'horizontal)
       ;; Left-Right split (...)
@@ -580,7 +615,7 @@ Returns ((TYPE WIDTH HEIGHT X Y PANE-ID CHILDREN) . NEXT-POS)."
           (let* ((child (car remaining))
                  (width (nth 1 child))
                  (next-win (if (cdr remaining)
-                               (split-window curr-win width t)
+                               (split-window curr-win (1+ width) t)
                              nil)))
             (tmux-cc-apply-layout child curr-win)
             (setq curr-win next-win)
@@ -1173,6 +1208,7 @@ When WINDOW-STR is nil, prompt interactively."
 (defun tmux-cc--display-pane-buffer (pane-id)
   "Display the tmux pane buffer for PANE-ID."
   (pop-to-buffer (tmux-cc--pane-buffer pane-id))
+  (tmux-cc--prepare-pane-window (selected-window))
   (tmux-cc--schedule-client-size-sync (selected-frame)))
 
 (defun tmux-cc--refresh-manager-if-live ()

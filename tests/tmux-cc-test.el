@@ -452,6 +452,34 @@
                      '("refresh-client -C 100x30"
                        "refresh-client -C 100x30"))))))
 
+(ert-deftest tmux-cc-apply-horizontal-layout-matches-vterm-body-width-test ()
+  (let* ((tmux-cc-panes (make-hash-table :test 'equal))
+         (left-buffer (generate-new-buffer "*tmux-cc-left*"))
+         (right-buffer (generate-new-buffer "*tmux-cc-right*"))
+         (layout (tmux-cc-parse-layout-string
+                  "abcd,80x24,0,0{40x24,0,0,1,39x24,41,0,2}")))
+    (puthash "%1" left-buffer tmux-cc-panes)
+    (puthash "%2" right-buffer tmux-cc-panes)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (tmux-cc-apply-layout layout (selected-window))
+          (let ((left-window (get-buffer-window left-buffer))
+                (right-window (get-buffer-window right-buffer)))
+            (should left-window)
+            (should right-window)
+            (should (= (window-body-width left-window) 40))
+            (should (= (window-body-width right-window) 39))
+            (should (= (car (window-fringes left-window)) 0))
+            (should (= (cadr (window-fringes left-window)) 0))
+            (should (= (car (window-fringes right-window)) 0))
+            (should (= (cadr (window-fringes right-window)) 0))))
+      (delete-other-windows)
+      (when (buffer-live-p left-buffer)
+        (kill-buffer left-buffer))
+      (when (buffer-live-p right-buffer)
+        (kill-buffer right-buffer)))))
+
 (ert-deftest tmux-cc-handle-error-stops-session-test ()
   (let* ((tmux-cc-panes (make-hash-table :test 'equal))
          (process-buffer (generate-new-buffer "*tmux-cc-test*"))
