@@ -480,6 +480,32 @@
       (when (buffer-live-p right-buffer)
         (kill-buffer right-buffer)))))
 
+(ert-deftest tmux-cc-prepare-pane-window-resizes-vterm-test ()
+  (let ((buffer (generate-new-buffer "*tmux-cc-vterm-size*"))
+        resized)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (set-window-buffer (selected-window) buffer)
+          (with-current-buffer buffer
+            (setq-local vterm--term 'fake-term))
+          (cl-letf (((symbol-function 'derived-mode-p)
+                     (lambda (&rest modes)
+                       (memq 'vterm-mode modes)))
+                    ((symbol-function 'vterm--set-size)
+                     (lambda (term height width)
+                       (setq resized (list term height width)))))
+            (tmux-cc--prepare-pane-window (selected-window)))
+          (should (equal resized
+                         (list 'fake-term
+                               (window-body-height (selected-window))
+                               (window-body-width (selected-window)))))
+          (should (= (car (window-fringes (selected-window))) 0))
+          (should (= (cadr (window-fringes (selected-window))) 0)))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest tmux-cc-handle-error-stops-session-test ()
   (let* ((tmux-cc-panes (make-hash-table :test 'equal))
          (process-buffer (generate-new-buffer "*tmux-cc-test*"))

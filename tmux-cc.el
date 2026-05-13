@@ -21,10 +21,12 @@
 
 (declare-function vterm-mode "vterm")
 (declare-function vterm--filter "vterm")
+(declare-function vterm--set-size "vterm-module")
 (defvar vterm-buffer-name-string)
 (defvar vterm-kill-buffer-on-exit)
 (defvar vterm-mode-map)
 (defvar vterm-shell)
+(defvar vterm--term)
 
 (defgroup tmux-cc nil
   "tmux control mode integration."
@@ -385,6 +387,7 @@ When DELAY is non-nil, wait DELAY seconds before rechecking."
 When FORCE is non-nil, send the size even if it matches the last sync."
   (when (and tmux-cc-sync-client-size
              (process-live-p tmux-cc-process))
+    (tmux-cc--resize-visible-pane-vterms frame)
     (when-let ((size (tmux-cc--current-client-size frame)))
       (when (or force (not (equal size tmux-cc--client-size)))
         (setq tmux-cc--client-size size)
@@ -411,7 +414,25 @@ When FORCE is non-nil, send the size even if it matches the last sync."
   "Make WINDOW's text area match terminal cell geometry."
   (when (window-live-p window)
     (set-window-fringes window 0 0)
-    (set-window-margins window 0 0)))
+    (set-window-margins window 0 0)
+    (tmux-cc--resize-pane-vterm window)))
+
+(defun tmux-cc--resize-pane-vterm (window)
+  "Resize the vterm emulator displayed in WINDOW to its body size."
+  (when (window-live-p window)
+    (with-current-buffer (window-buffer window)
+      (when (and (boundp 'vterm--term)
+                 vterm--term
+                 (derived-mode-p 'vterm-mode))
+        (let ((inhibit-read-only t))
+          (vterm--set-size vterm--term
+                           (window-body-height window)
+                           (window-body-width window)))))))
+
+(defun tmux-cc--resize-visible-pane-vterms (&optional frame)
+  "Resize all visible tmux pane vterms in FRAME to their windows."
+  (dolist (window (tmux-cc--visible-pane-windows frame))
+    (tmux-cc--prepare-pane-window window)))
 
 (defun tmux-cc--render-manager-closed (&optional reason)
   "Render the tmux manager in a disconnected state with optional REASON."
