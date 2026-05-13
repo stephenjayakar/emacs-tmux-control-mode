@@ -643,9 +643,8 @@ understands the inner percent-prefixed control lines."
     (tmux-cc-stop (format "tmux error: %s" line))
     (message "tmux error: %s" line))
 
-   (tmux-cc--in-cmd
-    (push line tmux-cc--current-cmd-lines))
-
+   ;; Pane output is asynchronous and can arrive between a command's
+   ;; %begin/%end records, especially when send-keys echoes through a shell.
    ((string-prefix-p "%output " line)
     (let ((space1 (string-match " " line)))
       (when space1
@@ -654,6 +653,9 @@ understands the inner percent-prefixed control lines."
             (let ((pane-id (substring line (1+ space1) space2))
                   (output-str (substring line (1+ space2))))
               (tmux-cc--handle-output pane-id output-str)))))))
+
+   (tmux-cc--in-cmd
+    (push line tmux-cc--current-cmd-lines))
 
    ((string-prefix-p "%layout-change " line)
     (let* ((parts (split-string line " "))

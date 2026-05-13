@@ -410,6 +410,27 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest tmux-cc-output-is-handled-while-command-is-open-test ()
+  (let ((tmux-cc--in-cmd nil)
+        (tmux-cc--current-cmd-lines nil)
+        (tmux-cc--cmd-queue nil)
+        handled-output
+        command-lines)
+    (push (lambda (lines)
+            (setq command-lines lines))
+          tmux-cc--cmd-queue)
+    (cl-letf (((symbol-function 'tmux-cc--handle-output)
+               (lambda (pane-id output)
+                 (push (list pane-id output) handled-output))))
+      (tmux-cc--handle-line "%begin 1 2 1")
+      (tmux-cc--handle-line "%output %1 ab")
+      (tmux-cc--handle-line "command response")
+      (tmux-cc--handle-line "%end 1 2 1"))
+    (should (equal (nreverse handled-output)
+                   '(("%1" "ab"))))
+    (should (equal command-lines
+                   '("command response")))))
+
 (ert-deftest tmux-cc-handle-error-stops-session-test ()
   (let* ((tmux-cc-panes (make-hash-table :test 'equal))
          (process-buffer (generate-new-buffer "*tmux-cc-test*"))
