@@ -431,6 +431,27 @@
     (should (equal command-lines
                    '("command response")))))
 
+(ert-deftest tmux-cc-sync-client-size-sends-refresh-client-test ()
+  (let ((tmux-cc-process 'fake-process)
+        (tmux-cc-sync-client-size t)
+        (tmux-cc--client-size nil)
+        sent)
+    (cl-letf (((symbol-function 'process-live-p)
+               (lambda (_process) t))
+              ((symbol-function 'tmux-cc--current-client-size)
+               (lambda (&optional _frame) "100x30"))
+              ((symbol-function 'tmux-cc-send-command)
+               (lambda (cmd &optional callback)
+                 (push cmd sent)
+                 (when callback
+                   (funcall callback nil)))))
+      (tmux-cc--sync-client-size)
+      (tmux-cc--sync-client-size)
+      (tmux-cc--sync-client-size nil t)
+      (should (equal (nreverse sent)
+                     '("refresh-client -C 100x30"
+                       "refresh-client -C 100x30"))))))
+
 (ert-deftest tmux-cc-handle-error-stops-session-test ()
   (let* ((tmux-cc-panes (make-hash-table :test 'equal))
          (process-buffer (generate-new-buffer "*tmux-cc-test*"))

@@ -151,6 +151,13 @@ intercepts input before it reaches this process."
   :type 'string
   :group 'tmux-cc)
 
+(defcustom tmux-cc-sync-client-size t
+  "When non-nil, keep the tmux control client size in sync with Emacs.
+This lets shells and full-screen programs wrap and redraw using the same
+terminal dimensions that vterm is rendering."
+  :type 'boolean
+  :group 'tmux-cc)
+
 (defvar tmux-cc-process nil
   "The active tmux -CC process.")
 
@@ -235,6 +242,12 @@ intercepts input before it reaches this process."
 
 (defvar tmux-cc--startup-refresh-timer nil
   "Fallback timer for the initial tmux-cc manager refresh.")
+
+(defvar tmux-cc--client-size nil
+  "Last size sent to the tmux control client.")
+
+(defvar tmux-cc--client-size-sync-timer nil
+  "Debounce timer for syncing the tmux control client size.")
 
 (defvar tmux-cc-manager-mode-map
   (let ((map (make-sparse-keymap)))
@@ -321,8 +334,50 @@ When DELAY is non-nil, wait DELAY seconds before rechecking."
            (setq tmux-cc--deferred-bootstrap-timer nil)
            (when (process-live-p tmux-cc-process)
              (if (or tmux-cc--in-cmd tmux-cc--cmd-queue)
-                 (tmux-cc--schedule-bootstrap-current-layout 0.05)
+               (tmux-cc--schedule-bootstrap-current-layout 0.05)
                (tmux-cc--bootstrap-current-layout)))))))
+
+(defun tmux-cc--current-client-size (&optional frame)
+  "Return the control-mode client size for FRAME as a tmux WxH string."
+  (let* ((root (frame-root-window (or frame (selected-frame))))
+         (width (if (window-live-p root)
+                    (window-body-width root)
+                  (window-total-width root)))
+         (height (if (window-live-p root)
+                     (window-body-height root)
+                   (window-total-height root))))
+    (when (and (integerp width)
+               (integerp height)
+               (> width 0)
+               (> height 0))
+      (format "%dx%d" width height))))
+
+(defun tmux-cc--sync-client-size (&optional frame force)
+  "Send the current Emacs terminal size for FRAME to tmux.
+When FORCE is non-nil, send the size even if it matches the last sync."
+  (when (and tmux-cc-sync-client-size
+             (process-live-p tmux-cc-process))
+    (when-let ((size (tmux-cc--current-client-size frame)))
+      (when (or force (not (equal size tmux-cc--client-size)))
+        (setq tmux-cc--client-size size)
+        (tmux-cc-send-command
+         (format "refresh-client -C %s" size)
+         #'ignore)))))
+
+(defun tmux-cc--schedule-client-size-sync (&optional frame)
+  "Debounce syncing the tmux control client size for FRAME."
+  (when (timerp tmux-cc--client-size-sync-timer)
+    (cancel-timer tmux-cc--client-size-sync-timer))
+  (setq tmux-cc--client-size-sync-timer
+        (run-at-time
+         0.05 nil
+         (lambda ()
+           (setq tmux-cc--client-size-sync-timer nil)
+           (tmux-cc--sync-client-size frame)))))
+
+(defun tmux-cc--window-size-change (&optional frame)
+  "React to Emacs window size changes in FRAME."
+  (tmux-cc--schedule-client-size-sync frame))
 
 (defun tmux-cc--render-manager-closed (&optional reason)
   "Render the tmux manager in a disconnected state with optional REASON."
@@ -377,8 +432,13 @@ When DELAY is non-nil, wait DELAY seconds before rechecking."
     (setq tmux-cc--deferred-bootstrap-timer nil)
     (when (timerp tmux-cc--startup-refresh-timer)
       (cancel-timer tmux-cc--startup-refresh-timer))
+    (when (timerp tmux-cc--client-size-sync-timer)
+      (cancel-timer tmux-cc--client-size-sync-timer))
+    (remove-hook 'window-size-change-functions #'tmux-cc--window-size-change)
     (setq tmux-cc--startup-refresh-timer nil
-          tmux-cc--startup-refresh-pending nil)
+          tmux-cc--startup-refresh-pending nil
+          tmux-cc--client-size-sync-timer nil
+          tmux-cc--client-size nil)
     (tmux-cc-manager-hide-preview)
     (when (buffer-live-p (get-buffer tmux-cc-manager-help-buffer-name))
       (kill-buffer (get-buffer tmux-cc-manager-help-buffer-name)))
@@ -566,7 +626,8 @@ to the remote side, preventing early echoing of commands."
   (unless (hash-table-p tmux-cc--pane-history-pending-output)
     (setq tmux-cc--pane-history-pending-output (make-hash-table :test 'equal)))
   (clrhash tmux-cc--pane-history-pending-output)
-  (setq tmux-cc--startup-refresh-pending t)
+  (setq tmux-cc--startup-refresh-pending t
+        tmux-cc--client-size nil)
 
   (setq tmux-cc-process
         (make-process
@@ -577,6 +638,8 @@ to the remote side, preventing early echoing of commands."
          :filter #'tmux-cc--filter
          :sentinel #'tmux-cc--sentinel))
 
+  (add-hook 'window-size-change-functions #'tmux-cc--window-size-change)
+  (tmux-cc--sync-client-size (selected-frame) t)
   (tmux-cc--render-manager-connecting)
   (setq tmux-cc--startup-refresh-timer
         (run-at-time 0.2 nil #'tmux-cc--run-startup-refresh))
@@ -1109,7 +1172,8 @@ When WINDOW-STR is nil, prompt interactively."
 
 (defun tmux-cc--display-pane-buffer (pane-id)
   "Display the tmux pane buffer for PANE-ID."
-  (pop-to-buffer (tmux-cc--pane-buffer pane-id)))
+  (pop-to-buffer (tmux-cc--pane-buffer pane-id))
+  (tmux-cc--schedule-client-size-sync (selected-frame)))
 
 (defun tmux-cc--refresh-manager-if-live ()
   "Refresh the tmux manager buffer when it exists."
