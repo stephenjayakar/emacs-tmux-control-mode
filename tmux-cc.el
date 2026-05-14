@@ -951,9 +951,7 @@ Return non-nil when STRING was rendered immediately."
   (message "Handling layout change: %s" layout-str)
   (let ((node (tmux-cc-parse-layout-string layout-str)))
     (tmux-cc--ensure-layout-pane-buffers node)
-    (unless (with-current-buffer (window-buffer (selected-window))
-              (derived-mode-p 'tmux-cc-manager-mode))
-      ;; Apply layout to the selected window. First close others.
+    (when (tmux-cc--pane-id-for-window (selected-window))
       (delete-other-windows)
       (tmux-cc-apply-layout node (selected-window)))))
 

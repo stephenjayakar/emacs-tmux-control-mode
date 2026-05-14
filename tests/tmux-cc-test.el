@@ -480,6 +480,44 @@
       (when (buffer-live-p right-buffer)
         (kill-buffer right-buffer)))))
 
+(ert-deftest tmux-cc-layout-change-does-not-take-over-non-pane-window-test ()
+  (let ((tmux-cc-panes (make-hash-table :test 'equal))
+        deleted
+        applied)
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (cl-letf (((symbol-function 'tmux-cc--ensure-layout-pane-buffers)
+                 #'ignore)
+                ((symbol-function 'tmux-cc--pane-id-for-window)
+                 (lambda (_window) nil))
+                ((symbol-function 'delete-other-windows)
+                 (lambda (&optional _window) (setq deleted t)))
+                ((symbol-function 'tmux-cc-apply-layout)
+                 (lambda (&rest _) (setq applied t))))
+        (tmux-cc--handle-layout-change
+         "@1" "abcd,80x24,0,0{40x24,0,0,1,39x24,41,0,2}")
+        (should-not deleted)
+        (should-not applied)))))
+
+(ert-deftest tmux-cc-layout-change-applies-in-selected-pane-window-test ()
+  (let ((tmux-cc-panes (make-hash-table :test 'equal))
+        deleted
+        applied)
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (cl-letf (((symbol-function 'tmux-cc--ensure-layout-pane-buffers)
+                 #'ignore)
+                ((symbol-function 'tmux-cc--pane-id-for-window)
+                 (lambda (_window) "%1"))
+                ((symbol-function 'delete-other-windows)
+                 (lambda (&optional _window) (setq deleted t)))
+                ((symbol-function 'tmux-cc-apply-layout)
+                 (lambda (&rest _) (setq applied t))))
+        (tmux-cc--handle-layout-change
+         "@1" "abcd,80x24,0,0{40x24,0,0,1,39x24,41,0,2}")
+        (should deleted)
+        (should applied)))))
+
 (ert-deftest tmux-cc-prepare-pane-window-resizes-vterm-test ()
   (let ((buffer (generate-new-buffer "*tmux-cc-vterm-size*"))
         resized)
