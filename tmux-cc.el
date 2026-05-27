@@ -263,6 +263,7 @@ terminal dimensions that vterm is rendering."
     (define-key map (kbd "c") #'tmux-cc-manager-command)
     (define-key map (kbd "n") #'tmux-cc-manager-new-window)
     (define-key map (kbd "S") #'tmux-cc-manager-new-session)
+    (define-key map (kbd "r") #'tmux-cc-manager-rename-session)
     (define-key map (kbd "s") #'tmux-cc-switch-session)
     (define-key map (kbd "w") #'tmux-cc-switch-window)
     (define-key map (kbd "d") #'tmux-cc-manager-detach)
@@ -1285,6 +1286,18 @@ If CALLBACK is non-nil, call it with tmux command output lines."
   (tmux-cc--run-command-and-refresh
    (format "kill-window -t %s" (tmux-cc--tmux-target window-id))))
 
+(defun tmux-cc-rename-session (session-name &optional new-name)
+  "Rename tmux session SESSION-NAME to NEW-NAME."
+  (interactive
+   (list (read-string "Session name: ")
+         (read-string "New session name: ")))
+  (when (string-empty-p (or new-name ""))
+    (user-error "Session name is required"))
+  (tmux-cc--run-command-and-refresh
+   (format "rename-session -t %s %s"
+           (tmux-cc--tmux-target session-name)
+           (tmux-cc--tmux-target new-name))))
+
 (defun tmux-cc-kill-session (session-name)
   "Kill tmux session SESSION-NAME."
   (interactive (list (read-string "Session name: ")))
@@ -1597,6 +1610,7 @@ Do not clear preview metadata."
         (insert "k    Kill the target at point (pane, window, or session)\n")
         (insert "n    Create a new tmux window\n")
         (insert "S    Create a new detached tmux session\n")
+        (insert "r    Rename the tmux session at point\n")
         (insert "c    Run an arbitrary tmux command\n")
         (insert "s    Interactive session switch\n")
         (insert "w    Interactive window switch\n")
@@ -1636,6 +1650,28 @@ Do not clear preview metadata."
   "Create a new detached tmux session from the manager."
   (interactive)
   (call-interactively #'tmux-cc-new-session))
+
+(defun tmux-cc-manager-rename-session ()
+  "Rename the tmux session at point."
+  (interactive)
+  (pcase-let ((`(,target-type ,target-id ,_pane-id ,label)
+               (tmux-cc--manager-line-target)))
+    (unless (eq target-type 'session)
+      (user-error "Point is not on a tmux session line"))
+    (let* ((session-name (or label target-id))
+           (new-name (read-string (format "Rename session %s to: " session-name))))
+      (when (string-empty-p new-name)
+        (user-error "Session name is required"))
+      (unless (string= new-name session-name)
+        (when (and (eq tmux-cc--manager-preview-target-type 'session)
+                   (equal tmux-cc--manager-preview-target-id session-name))
+          (setq tmux-cc--manager-preview-target-id new-name
+                tmux-cc--manager-preview-label new-name))
+        (tmux-cc--run-command-and-refresh
+         (format "rename-session -t %s %s"
+                 (tmux-cc--tmux-target session-name)
+                 (tmux-cc--tmux-target new-name)))
+        (message "Renamed session %s to %s" session-name new-name)))))
 
 (defun tmux-cc-manager-detach ()
   "Detach the active tmux client from the manager."
@@ -1690,7 +1726,7 @@ Do not clear preview metadata."
           (erase-buffer)
           (insert (propertize "Tmux Control\n" 'face 'bold))
           (insert (propertize
-                   "RET visit, TAB preview, g refresh, h help, k kill, n new-window, S new-session, c command, d detach\n"
+                   "RET visit, TAB preview, g refresh, h help, k kill, n new-window, S new-session, r rename-session, c command, d detach\n"
                    'face 'shadow))
           (insert (propertize
                    (format "Pane keys: %s next, %s previous, %s manager, %s kill, %s split-right, %s split-below, %s command\n\n"
@@ -1721,7 +1757,7 @@ Do not clear preview metadata."
                        'tmux-pane-id pane-id
                        'tmux-target-label session-name
                        'mouse-face 'highlight
-                       'help-echo "RET: switch to tmux session"))
+                       'help-echo "RET: switch to tmux session, r: rename session"))
                 (when (tmux-cc--manager-target-preview-active-p 'session session-name)
                   (tmux-cc--manager-insert-preview-block pane-id session-name)))))
           (insert "\n")

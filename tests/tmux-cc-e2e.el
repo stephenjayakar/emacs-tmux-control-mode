@@ -12,10 +12,13 @@
 (defconst tmux-cc-e2e-session "ccflow")
 (defconst tmux-cc-e2e-window-name "flow-win")
 (defconst tmux-cc-e2e-session-2 "ccflow-2")
+(defconst tmux-cc-e2e-session-2-renamed "ccflow-2-renamed")
 
 (defun tmux-cc-e2e--kill-test-sessions ()
   "Kill the tmux sessions and server used by the live e2e harness."
-  (dolist (session (list tmux-cc-e2e-session tmux-cc-e2e-session-2))
+  (dolist (session (list tmux-cc-e2e-session
+                         tmux-cc-e2e-session-2
+                         tmux-cc-e2e-session-2-renamed))
     (ignore-errors
       (call-process "tmux" nil nil nil
                     "-L" tmux-cc-e2e-socket
@@ -468,6 +471,24 @@
      "Interactive switch-session did not activate %s" tmux-cc-e2e-session-2))
   "ok-switch-session")
 
+(defun tmux-cc-e2e-test-manager-rename-session ()
+  "Verify manager-driven session rename."
+  (tmux-cc-e2e-manager-goto-id 'session tmux-cc-e2e-session-2)
+  (cl-letf (((symbol-function 'read-string)
+             (lambda (&rest _args) tmux-cc-e2e-session-2-renamed)))
+    (with-current-buffer tmux-cc-manager-buffer-name
+      (tmux-cc-manager-rename-session)))
+  (tmux-cc-e2e--wait 30)
+  (tmux-cc-e2e-manager-goto-id 'session tmux-cc-e2e-session-2-renamed)
+  (tmux-cc-e2e--assert
+   (not (cl-find-if
+         (lambda (item)
+           (and (eq (plist-get item :type) 'session)
+                (string= (plist-get item :id) tmux-cc-e2e-session-2)))
+         (tmux-cc-e2e-manager-targets)))
+   "Manager rename-session did not remove old name %s" tmux-cc-e2e-session-2)
+  "ok-manager-rename-session")
+
 (defun tmux-cc-e2e-test-manager-visit-window ()
   "Verify manager visit on a window line."
   (let ((buffer-name
@@ -540,14 +561,14 @@
 
 (defun tmux-cc-e2e-test-manager-delete-session ()
   "Verify manager deletion of a detached session."
-  (tmux-cc-e2e-manager-delete-id 'session tmux-cc-e2e-session-2)
+  (tmux-cc-e2e-manager-delete-id 'session tmux-cc-e2e-session-2-renamed)
   (tmux-cc-e2e--assert
    (not (cl-find-if
          (lambda (item)
            (and (eq (plist-get item :type) 'session)
-                (equal (plist-get item :id) tmux-cc-e2e-session-2)))
+                (equal (plist-get item :id) tmux-cc-e2e-session-2-renamed)))
          (tmux-cc-e2e-manager-targets)))
-   "Manager session delete did not remove %s" tmux-cc-e2e-session-2)
+   "Manager session delete did not remove %s" tmux-cc-e2e-session-2-renamed)
   "ok-delete-session")
 
 (defun tmux-cc-e2e-test-detach ()
@@ -632,6 +653,13 @@
   "Run the manager new-session e2e case."
   (tmux-cc-e2e--run-isolated #'tmux-cc-e2e-test-start #'tmux-cc-e2e-test-manager-new-session))
 
+(defun tmux-cc-e2e-case-manager-rename-session ()
+  "Run the manager rename-session e2e case."
+  (tmux-cc-e2e--run-isolated
+   #'tmux-cc-e2e-test-start
+   #'tmux-cc-e2e-test-manager-new-session
+   #'tmux-cc-e2e-test-manager-rename-session))
+
 (defun tmux-cc-e2e-case-switch-session ()
   "Run the switch-session e2e case."
   (tmux-cc-e2e--run-isolated
@@ -676,6 +704,7 @@
   (tmux-cc-e2e--run-isolated
    #'tmux-cc-e2e-test-start
    #'tmux-cc-e2e-test-manager-new-session
+   #'tmux-cc-e2e-test-manager-rename-session
    #'tmux-cc-e2e-test-manager-delete-session))
 
 (defun tmux-cc-e2e-case-detach ()
@@ -699,6 +728,7 @@
                ("switch-window" . tmux-cc-e2e-case-switch-window)
                ("manager-new-session" . tmux-cc-e2e-case-manager-new-session)
                ("switch-session" . tmux-cc-e2e-case-switch-session)
+               ("manager-rename-session" . tmux-cc-e2e-case-manager-rename-session)
                ("manager-visit-window" . tmux-cc-e2e-case-manager-visit-window)
                ("manager-visit-pane" . tmux-cc-e2e-case-manager-visit-pane)
                ("manager-command" . tmux-cc-e2e-case-manager-command)

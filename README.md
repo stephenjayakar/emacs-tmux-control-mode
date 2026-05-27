@@ -79,6 +79,7 @@ Inside the tmux manager:
 - `k` kills the target at point
 - `n` creates a new tmux window
 - `S` creates a new detached tmux session
+- `r` renames the tmux session at point
 - `c` runs an arbitrary tmux command
 - `s` and `w` switch sessions/windows
 - `d` detaches the current tmux client
