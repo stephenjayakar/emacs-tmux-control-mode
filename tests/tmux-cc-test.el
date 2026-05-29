@@ -156,6 +156,7 @@
                           (funcall original-require feature filename noerror))))
                      ((symbol-function 'vterm-mode)
                       (lambda ()
+                        (setq-local display-line-numbers t)
                         (make-process
                          :name "tmux-cc-vterm-test"
                          :buffer (current-buffer)
@@ -171,6 +172,7 @@
                       (should (processp proc))
                       (should (equal (process-get proc 'tmux-cc-pane-id) "%42"))
                       (should (eq (process-filter proc) #'tmux-cc--pane-emulate-terminal))
+                      (should-not display-line-numbers)
                       (should (eq (lookup-key (current-local-map) (kbd "C-\\")) nil))
                       (call-interactively (key-binding (kbd "C-c C-d")))
                       (should (equal captured '(("%42" "\C-d"))))))
@@ -223,10 +225,12 @@
         (with-current-buffer buffer
           (tmux-cc-pane-mode 1)
           (setq-local tmux-cc--pane-local-map pane-map)
+          (setq-local display-line-numbers t)
           (setq-local vterm-copy-mode nil)
           (use-local-map nil)
           (tmux-cc--after-vterm-copy-mode)
-          (should (eq (current-local-map) pane-map)))
+          (should (eq (current-local-map) pane-map))
+          (should-not display-line-numbers))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -487,6 +491,65 @@
                      '("refresh-client -C 100x30"
                        "refresh-client -C 100x30"))))))
 
+(defun tmux-cc-test--bounds-width (windows)
+  "Return the integer width component of `tmux-cc--window-bounds-size'."
+  (let ((size (tmux-cc--window-bounds-size windows)))
+    (and size
+         (string-match "\\`\\([0-9]+\\)x\\([0-9]+\\)\\'" size)
+         (string-to-number (match-string 1 size)))))
+
+(ert-deftest tmux-cc-window-bounds-size-matches-body-geometry-test ()
+  (let ((buffer (generate-new-buffer "*tmux-cc-bounds*")))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (set-window-buffer (selected-window) buffer)
+          (set-window-fringes (selected-window) 0 0)
+          (set-window-margins (selected-window) 0 0)
+          (let ((window (selected-window)))
+            (should (equal (tmux-cc--window-bounds-size (list window))
+                           (format "%dx%d"
+                                   (window-max-chars-per-line window)
+                                   (window-body-height window))))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest tmux-cc-client-width-matches-vterm-render-width-test ()
+  "The width reported to tmux must equal the width vterm is sized to.
+
+This is the regression guard for the reported wrap/`C-r'/`C-a C-k'
+corruption: forcing both to `window-body-width' overstated the terminal
+by the fringeless continuation-glyph column, so the shell wrapped a
+column early and readline's cursor math drifted."
+  (let ((buffer (generate-new-buffer "*tmux-cc-width*"))
+        vterm-width)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (set-window-buffer (selected-window) buffer)
+          (set-window-fringes (selected-window) 0 0)
+          (set-window-margins (selected-window) 0 0)
+          (with-current-buffer buffer
+            (setq-local vterm--term 'fake-term))
+          (cl-letf (((symbol-function 'derived-mode-p)
+                     (lambda (&rest modes) (memq 'vterm-mode modes)))
+                    ((symbol-function 'vterm--set-size)
+                     (lambda (_term _height width)
+                       (setq vterm-width width))))
+            (tmux-cc--resize-pane-vterm (selected-window)))
+          (let ((window (selected-window)))
+            ;; vterm is sized to the columns Emacs can actually render...
+            (should (= vterm-width (window-max-chars-per-line window)))
+            ;; ...and tmux is told that exact same width.
+            (should (= (tmux-cc-test--bounds-width (list window)) vterm-width))
+            ;; The old buggy value (`window-body-width') is strictly larger
+            ;; when the window has no fringe, so guard against regressing.
+            (should (< vterm-width (window-body-width window)))))
+      (delete-other-windows)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest tmux-cc-apply-horizontal-layout-matches-vterm-body-width-test ()
   (let* ((tmux-cc-panes (make-hash-table :test 'equal))
          (left-buffer (generate-new-buffer "*tmux-cc-left*"))
@@ -561,6 +624,7 @@
           (delete-other-windows)
           (set-window-buffer (selected-window) buffer)
           (with-current-buffer buffer
+            (setq-local display-line-numbers t)
             (setq-local vterm--term 'fake-term))
           (cl-letf (((symbol-function 'derived-mode-p)
                      (lambda (&rest modes)
@@ -572,9 +636,11 @@
           (should (equal resized
                          (list 'fake-term
                                (window-body-height (selected-window))
-                               (window-body-width (selected-window)))))
+                               (window-max-chars-per-line (selected-window)))))
           (should (= (car (window-fringes (selected-window))) 0))
-          (should (= (cadr (window-fringes (selected-window))) 0)))
+          (should (= (cadr (window-fringes (selected-window))) 0))
+          (with-current-buffer buffer
+            (should-not display-line-numbers)))
       (delete-other-windows)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))

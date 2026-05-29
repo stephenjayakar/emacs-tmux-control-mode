@@ -21,6 +21,7 @@
 
 (declare-function vterm-mode "vterm")
 (declare-function vterm--filter "vterm")
+(declare-function vterm--get-margin-width "vterm")
 (declare-function vterm--set-size "vterm-module")
 (defvar vterm-buffer-name-string)
 (defvar vterm-kill-buffer-on-exit)
@@ -349,7 +350,12 @@ When DELAY is non-nil, wait DELAY seconds before rechecking."
     (nreverse windows)))
 
 (defun tmux-cc--window-bounds-size (windows)
-  "Return the bounding WxH size for WINDOWS."
+  "Return the bounding WxH tmux client size for WINDOWS.
+Each pane contributes only the terminal cells Emacs can actually render:
+`tmux-cc--pane-window-width' columns by `window-body-height' rows.  The
+window edge offsets still account for separators between split windows,
+but total window edges are not used for the right and bottom edges because
+they include mode lines and reserved continuation/truncation columns."
   (when windows
     (let ((left most-positive-fixnum)
           (top most-positive-fixnum)
@@ -357,11 +363,12 @@ When DELAY is non-nil, wait DELAY seconds before rechecking."
           (bottom 0))
       (dolist (window windows)
         (pcase-let ((`(,w-left ,w-top ,w-right ,w-bottom)
-                     (window-edges window)))
+                     (window-edges window t)))
           (setq left (min left w-left)
                 top (min top w-top)
-                right (max right w-right)
-                bottom (max bottom w-bottom))))
+                right (max right (+ w-left (tmux-cc--pane-window-width window)))
+                bottom (max bottom (+ w-top (window-body-height window))))
+          (ignore w-right w-bottom)))
       (let ((width (- right left))
             (height (- bottom top)))
         (when (and (> width 0) (> height 0))
@@ -372,7 +379,7 @@ When DELAY is non-nil, wait DELAY seconds before rechecking."
   (or (tmux-cc--window-bounds-size (tmux-cc--visible-pane-windows frame))
       (let* ((root (frame-root-window (or frame (selected-frame))))
              (width (if (window-live-p root)
-                        (window-body-width root)
+                        (tmux-cc--pane-window-width root)
                       (window-total-width root)))
              (height (if (window-live-p root)
                          (window-body-height root)
@@ -414,9 +421,33 @@ When FORCE is non-nil, send the size even if it matches the last sync."
 (defun tmux-cc--prepare-pane-window (window)
   "Make WINDOW's text area match terminal cell geometry."
   (when (window-live-p window)
+    (with-current-buffer (window-buffer window)
+      (tmux-cc--disable-pane-editor-chrome))
     (set-window-fringes window 0 0)
     (set-window-margins window 0 0)
     (tmux-cc--resize-pane-vterm window)))
+
+(defun tmux-cc--disable-pane-editor-chrome ()
+  "Disable editor UI that changes terminal cell geometry in pane buffers."
+  (setq-local display-line-numbers nil)
+  (when (fboundp 'display-line-numbers-mode)
+    (display-line-numbers-mode -1))
+  (when (fboundp 'linum-mode)
+    (linum-mode -1)))
+
+(defun tmux-cc--pane-window-width (window)
+  "Return the number of terminal columns WINDOW can display.
+This uses `window-max-chars-per-line', matching how vterm sizes its own
+emulator.  If line numbers are somehow active, subtract vterm's own line
+number margin calculation as well.  Sizing vterm and tmux to this value
+keeps the shell's wrap column aligned with what Emacs actually renders."
+  (with-current-buffer (window-buffer window)
+    (max 1
+         (- (window-max-chars-per-line window)
+            (if (and (bound-and-true-p display-line-numbers)
+                     (fboundp 'vterm--get-margin-width))
+                (vterm--get-margin-width)
+              0)))))
 
 (defun tmux-cc--resize-pane-vterm (window)
   "Resize the vterm emulator displayed in WINDOW to its body size."
@@ -428,12 +459,25 @@ When FORCE is non-nil, send the size even if it matches the last sync."
         (let ((inhibit-read-only t))
           (vterm--set-size vterm--term
                            (window-body-height window)
-                           (window-body-width window)))))))
+                           (tmux-cc--pane-window-width window)))))))
 
 (defun tmux-cc--resize-visible-pane-vterms (&optional frame)
   "Resize all visible tmux pane vterms in FRAME to their windows."
   (dolist (window (tmux-cc--visible-pane-windows frame))
     (tmux-cc--prepare-pane-window window)))
+
+(defun tmux-cc-refresh-geometry (&optional frame)
+  "Repair pane buffer geometry and force a tmux client size sync.
+This is useful after reloading tmux-cc while a session is already active."
+  (interactive)
+  (maphash
+   (lambda (_pane-id buffer)
+     (when (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (tmux-cc--disable-pane-editor-chrome))))
+   tmux-cc-panes)
+  (tmux-cc--resize-visible-pane-vterms frame)
+  (tmux-cc--sync-client-size (or frame (selected-frame)) t))
 
 (defun tmux-cc--render-manager-closed (&optional reason)
   "Render the tmux manager in a disconnected state with optional REASON."
@@ -883,6 +927,7 @@ Return non-nil when STRING was rendered immediately."
 (defun tmux-cc--after-vterm-copy-mode (&rest _)
   "Maintain tmux pane state after `vterm-copy-mode' toggles."
   (when (bound-and-true-p tmux-cc-pane-mode)
+    (tmux-cc--disable-pane-editor-chrome)
     (unless (bound-and-true-p vterm-copy-mode)
       (when tmux-cc--pane-local-map
         (use-local-map tmux-cc--pane-local-map))
@@ -978,6 +1023,7 @@ Return non-nil when STRING was rendered immediately."
             (vterm-kill-buffer-on-exit nil)
             (vterm-buffer-name-string nil))
         (vterm-mode))
+      (tmux-cc--disable-pane-editor-chrome)
       (let ((proc (get-buffer-process buf)))
         (unless (processp proc)
           (error "vterm did not create a pane process"))
@@ -1023,6 +1069,11 @@ Return non-nil when STRING was rendered immediately."
     (apply orig-fun proc string args)))
 
 (advice-add 'process-send-string :around #'tmux-cc--intercept-process-send-string)
+
+(when (and (hash-table-p tmux-cc-panes)
+           (> (hash-table-count tmux-cc-panes) 0))
+  (ignore-errors
+    (tmux-cc-refresh-geometry)))
 
 ;;; --- Compatibility Cleanup For Old Window Advice ---
 

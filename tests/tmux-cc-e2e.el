@@ -418,6 +418,35 @@
     (kill-buffer buffer))
   "ok-mixed-window-navigation")
 
+(defun tmux-cc-e2e-test-terminal-geometry ()
+  "Verify live tmux pane size matches the vterm renderable area."
+  (let* ((pane-id (tmux-cc-e2e--visit-first-pane))
+         (window (selected-window))
+         (buffer (window-buffer window)))
+    (tmux-cc--sync-client-size (selected-frame) t)
+    (tmux-cc-e2e--wait 10)
+    (with-current-buffer buffer
+      (tmux-cc-e2e--assert (not (bound-and-true-p display-line-numbers))
+                            "Pane buffer inherited display-line-numbers"))
+    (let* ((expected-width (tmux-cc--pane-window-width window))
+           (expected-height (window-body-height window))
+           (line (car (tmux-cc-e2e-send-command
+                       (format "list-panes -F '#{pane_id}\t#{pane_width}\t#{pane_height}' -t %s"
+                               (tmux-cc--tmux-target pane-id)))))
+           (parts (and line (split-string line "\t"))))
+      (tmux-cc-e2e--assert (= (length parts) 3)
+                            "Unexpected pane size output: %S" line)
+      (tmux-cc-e2e--assert (equal (nth 0 parts) pane-id)
+                            "Pane size output was for %s, expected %s"
+                            (nth 0 parts) pane-id)
+      (tmux-cc-e2e--assert (= (string-to-number (nth 1 parts)) expected-width)
+                            "tmux pane width %s did not match vterm width %s"
+                            (nth 1 parts) expected-width)
+      (tmux-cc-e2e--assert (= (string-to-number (nth 2 parts)) expected-height)
+                            "tmux pane height %s did not match vterm height %s"
+                            (nth 2 parts) expected-height)))
+  "ok-terminal-geometry")
+
 (defun tmux-cc-e2e-test-manager-new-window ()
   "Verify manager-driven window creation."
   (tmux-cc-e2e-manager-open)
@@ -638,6 +667,12 @@
    #'tmux-cc-e2e-test-start
    #'tmux-cc-e2e-test-mixed-window-navigation))
 
+(defun tmux-cc-e2e-case-terminal-geometry ()
+  "Run the live terminal geometry case."
+  (tmux-cc-e2e--run-isolated
+   #'tmux-cc-e2e-test-start
+   #'tmux-cc-e2e-test-terminal-geometry))
+
 (defun tmux-cc-e2e-case-manager-new-window ()
   "Run the manager new-window e2e case."
   (tmux-cc-e2e--run-isolated #'tmux-cc-e2e-test-start #'tmux-cc-e2e-test-manager-new-window))
@@ -721,6 +756,7 @@
                ("help" . tmux-cc-e2e-case-help)
                ("emacs-window-arrangement" . tmux-cc-e2e-case-emacs-window-arrangement)
                ("mixed-window-navigation" . tmux-cc-e2e-case-mixed-window-navigation)
+               ("terminal-geometry" . tmux-cc-e2e-case-terminal-geometry)
                ("splits-focus" . tmux-cc-e2e-case-splits-focus)
                ("vertical-tab-focus" . tmux-cc-e2e-case-vertical-tab-focus)
                ("kill-pane" . tmux-cc-e2e-case-kill-pane)
