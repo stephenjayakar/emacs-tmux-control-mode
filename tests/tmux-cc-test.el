@@ -8,6 +8,7 @@
 (defvar vterm-mode-map)
 (defvar tmux-cc--pane-pending-output)
 (defvar tmux-cc--pane-local-map)
+(defvar vterm--term)
 
 (ert-deftest tmux-cc-parse-layout-string-test ()
   (let ((node (tmux-cc-parse-layout-string "b25f,80x24,0,0{40x24,0,0,1,39x24,41,0,2}")))
